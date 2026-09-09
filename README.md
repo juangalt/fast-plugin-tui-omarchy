@@ -103,6 +103,14 @@ Headless checks: `bin/omarchy-plugin-tui __rows | head`,
 `bin/omarchy-plugin-tui __preview b.okomart`, and
 `omarchy-plugin-validate .` (run it on the real directory, not the symlink).
 
+`tests/keys.sh` exercises every key binding end-to-end: it starts the TUI in
+dry-run mode under a pseudo-terminal (`tests/ptydrive.py`, which answers
+terminal queries the way foot does, so `gum` behaves as in a real terminal),
+presses each key and checks the screen. It uses a private cache seeded from
+`~/.cache/omarchy-plugin-tui` and never downloads anything. Run
+`tests/keys.sh` for the whole matrix or `tests/keys.sh ctrl_r help` for a few
+cases; `KEEP=1` keeps the typescripts.
+
 ## Limitations
 
 - Built-in `omarchy.*` plugins appear in the catalog but can only be enabled or disabled, not installed or removed.
