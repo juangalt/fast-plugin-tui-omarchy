@@ -12,7 +12,7 @@ Item {
   property var manifest: null
 
   readonly property string pluginId: manifest && manifest.id
-    ? String(manifest.id) : "felipe.oma-quick-plugin-tui"
+    ? String(manifest.id) : "juangalt.oma-quick-plugin-tui"
   readonly property string homeDir: Quickshell.env("HOME")
   readonly property string dataHome: Quickshell.env("XDG_DATA_HOME") || homeDir + "/.local/share"
   readonly property string desktopPath: dataHome + "/applications/" + pluginId + ".desktop"

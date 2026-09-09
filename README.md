@@ -16,14 +16,14 @@ ship with Omarchy.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/felipegalleguillos/oma-quick-plugin-tui.git --enable
+omarchy plugin add https://github.com/juangalt/oma-quick-plugin-tui.git --enable
 ```
 
 Enabling the plugin adds a **Oma Quick Plugin TUI** entry to the app launcher
 (`SUPER + SPACE`). You can also run it directly:
 
 ```bash
-~/.config/omarchy/plugins/felipe.oma-quick-plugin-tui/bin/oma-quick-plugin-tui
+~/.config/omarchy/plugins/juangalt.oma-quick-plugin-tui/bin/oma-quick-plugin-tui
 ```
 
 ### Omarchy menu entry (optional)
@@ -33,7 +33,7 @@ To get an *Install → Plugins* row right after *Install → TUI*, add this to
 the same Nerd Font puzzle glyph Omarchy uses for its own plugin menu):
 
 ```jsonc
-"install.plugins": {"icon":"󰐱","label":"Plugins","action":"omarchy-launch-tui --app-id=TUI.float ~/.config/omarchy/plugins/felipe.oma-quick-plugin-tui/bin/oma-quick-plugin-tui"},
+"install.plugins": {"icon":"󰐱","label":"Plugins","action":"omarchy-launch-tui --app-id=TUI.float ~/.config/omarchy/plugins/juangalt.oma-quick-plugin-tui/bin/oma-quick-plugin-tui"},
 ```
 
 ### Keybinding (optional)
@@ -43,7 +43,7 @@ In `~/.config/hypr/bindings.lua` (check the key is free first with
 
 ```lua
 o.bind("SUPER + SHIFT + CTRL + P", "Plugins",
-  "omarchy-launch-tui --app-id=TUI.float $HOME/.config/omarchy/plugins/felipe.oma-quick-plugin-tui/bin/oma-quick-plugin-tui")
+  "omarchy-launch-tui --app-id=TUI.float $HOME/.config/omarchy/plugins/juangalt.oma-quick-plugin-tui/bin/oma-quick-plugin-tui")
 ```
 
 The window uses the `TUI.float` app-id, so Omarchy floats and centres it like
@@ -110,7 +110,7 @@ telemetry. Everything it does:
   port — and requires a random per-run API key; the tool uses it for one
   thing, refreshing the header after the highlight timeout.
 - **One `.desktop` file**: while the plugin is enabled, the service writes
-  `~/.local/share/applications/felipe.oma-quick-plugin-tui.desktop`, tagged
+  `~/.local/share/applications/juangalt.oma-quick-plugin-tui.desktop`, tagged
   with an `X-Oma-Quick-Plugin-TUI-Managed=true` marker, and removes it on
   disable/remove. It never replaces a launcher it did not write.
 - **Plugin changes go through `omarchy plugin add/remove/enable/disable/update`**,
@@ -137,10 +137,10 @@ understands, including `file://`) — used by the tests.
 ## Development
 
 ```bash
-git clone https://github.com/felipegalleguillos/oma-quick-plugin-tui.git
-ln -s "$PWD/oma-quick-plugin-tui" ~/.config/omarchy/plugins/felipe.oma-quick-plugin-tui
+git clone https://github.com/juangalt/oma-quick-plugin-tui.git
+ln -s "$PWD/oma-quick-plugin-tui" ~/.config/omarchy/plugins/juangalt.oma-quick-plugin-tui
 omarchy-shell shell rescanPlugins
-omarchy plugin enable felipe.oma-quick-plugin-tui
+omarchy plugin enable juangalt.oma-quick-plugin-tui
 ```
 
 Headless checks: `bin/oma-quick-plugin-tui __rows | head`,
