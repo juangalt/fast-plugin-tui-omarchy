@@ -4,6 +4,8 @@ A terminal UI for the [Omarchy plugin marketplace](https://plugins.omarchy.org),
 in the same style as Omarchy's *Install → AUR* picker: fuzzy search, a details
 pane, and one keypress to install.
 
+![Oma Quick Plugin TUI](preview.png)
+
 - **Search** by name, id, author or tag
 - **Filter** by category (Widgets, Productivity, System, Hardware, …), installed-only, verified-only
 - **Sort** by GitHub stars, hearts, views, copies, recently added, recently updated, or name
