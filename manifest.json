@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "felipe.plugin-tui",
+  "name": "Plugin TUI",
+  "version": "0.1.0",
+  "author": "Felipe Galleguillos",
+  "license": "MIT",
+  "description": "Browse, search, sort and install Omarchy marketplace plugins from a fzf TUI",
+  "kinds": ["service"],
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}

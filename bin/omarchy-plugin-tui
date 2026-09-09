@@ -1,0 +1,583 @@
+#!/bin/bash
+
+# omarchy-plugin-tui — browse, search, sort and install Omarchy marketplace
+# plugins from a fzf TUI, in the style of omarchy-pkg-aur-install.
+#
+# Data comes from two JSON endpoints published by the marketplace:
+#   catalog.json  — plugin metadata incl. category, tags, GitHub stars
+#   /v1/stats     — hearts / views / copies per plugin id
+# Both are cached under $XDG_CACHE_HOME/omarchy-plugin-tui and joined once by
+# jq into a TSV that fzf reloads instantly on every sort/filter change.
+#
+# fzf key bindings re-invoke this script with a `__subcommand` (see dispatch at
+# the bottom), so the whole tool is one file with no extra dependencies beyond
+# curl, jq, fzf and gum — all shipped with Omarchy.
+
+set -euo pipefail
+
+SELF=$(realpath -- "${BASH_SOURCE[0]}")
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-plugin-tui"
+CATALOG_URL="https://plugins.omarchy.org/catalog.json"
+STATS_URL="https://api.omarchyplugins.com/v1/stats"
+CATALOG_TTL_MIN=360
+STATS_TTL_MIN=15
+PLUGINS_DIR="$HOME/.config/omarchy/plugins"
+SORTS=(stars hearts views copies added updated name)
+DRY_RUN="${OMARCHY_PLUGIN_TUI_DRY_RUN:-0}"
+ASSUME_YES="${OMARCHY_PLUGIN_TUI_YES:-0}"
+STATE_FILE="${OPT_STATE:-$CACHE_DIR/state}"
+
+SORT=stars
+CATEGORY=""
+ONLY_INSTALLED=0
+ONLY_VERIFIED=0
+
+# Nerd Font glyphs (star, heart, eye, copy) — the same font foot renders.
+G_STAR=$''
+G_HEART=$''
+G_VIEWS=$''
+G_COPIES=$''
+
+fail() {
+  echo "omarchy-plugin-tui: $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<USAGE
+Usage: omarchy-plugin-tui [--refresh] [--yes] [--dry-run] [-h]
+
+  --refresh   re-download the catalog and stats before starting
+  --yes       pass --yes to omarchy plugin add/remove/update (skips confirmations)
+  --dry-run   print the omarchy commands instead of running them
+
+Environment: OMARCHY_PLUGIN_TUI_YES=1, OMARCHY_PLUGIN_TUI_DRY_RUN=1
+Cache: $CACHE_DIR
+USAGE
+}
+
+# ---------------------------------------------------------------- cache ---
+
+cache_fresh() {
+  local file="$CACHE_DIR/$1" minutes="$2"
+  [[ -f $file && -n $(find "$file" -mmin -"$minutes" 2>/dev/null) ]]
+}
+
+# Download to a temp file in the cache dir, validate it is JSON with a
+# .plugins key, then rename atomically so a failed download never clobbers
+# the copy we already have.
+fetch() {
+  local url="$1" dest="$2" title="$3" tmp ok=1
+  tmp=$(mktemp -- "$dest.XXXXXX")
+  local -a curl_cmd=(curl -fsSL --connect-timeout 10 --max-time 120 -o "$tmp" "$url")
+  if [[ -t 1 ]] && command -v gum >/dev/null; then
+    gum spin --title "$title" -- "${curl_cmd[@]}" || ok=0
+  else
+    "${curl_cmd[@]}" || ok=0
+  fi
+  if (( ok )) && jq -e '.plugins' "$tmp" >/dev/null 2>&1; then
+    mv -f -- "$tmp" "$dest"
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+# Flatten catalog + stats into a TSV that sort/awk can chew through in
+# milliseconds, plus one-JSON-per-line index for the preview lookup.
+#
+# rows.tsv columns:
+#  1 id  2 name  3 author  4 tags  5 category  6 kind  7 stars  8 hearts
+#  9 views  10 copies  11 addedAt  12 updatedAt  13 verified  14 installAvailable
+#  15 repo  16 sourceType
+flatten_cache() {
+  local stats="$CACHE_DIR/stats.json" tmp
+  [[ -f $stats ]] || stats=/dev/null
+
+  tmp=$(mktemp -- "$CACHE_DIR/rows.XXXXXX")
+  jq -r --slurpfile st "$stats" '
+    def clean: (. // "") | tostring | gsub("[\t\n\r]"; " ");
+    ($st[0].plugins // {}) as $s
+    | .plugins[]
+    | . as $p | ($s[$p.id] // {}) as $m
+    | [ ($p.id | clean), ($p.name | clean), ($p.author | clean),
+        (($p.tags // []) | join(",") | clean),
+        ($p.category | clean), ($p.kind | clean),
+        ($p.stars // 0), ($m.hearts // 0), ($m.views // 0), ($m.copies // 0),
+        ($p.addedAt // "0000-00-00"), ($p.repositoryUpdatedAt // ""),
+        (if $p.verificationStatus == "verified" then 1 else 0 end),
+        (if $p.installAvailable == true then 1 else 0 end),
+        ($p.repo | clean), ($p.sourceType // "community")
+      ] | @tsv
+  ' "$CACHE_DIR/catalog.json" >"$tmp"
+  mv -f -- "$tmp" "$CACHE_DIR/rows.tsv"
+
+  tmp=$(mktemp -- "$CACHE_DIR/index.XXXXXX")
+  jq -c --slurpfile st "$stats" '
+    ($st[0].plugins // {}) as $s
+    | .plugins[]
+    | {id} + . + {stats: ($s[.id] // {})}
+    | del(.previewImage, .previewThumbnail, .previewWidth, .previewHeight,
+          .previewThumbnailWidth, .previewThumbnailHeight,
+          .previewSourceWidth, .previewSourceHeight, .accent, .initials)
+  ' "$CACHE_DIR/catalog.json" >"$tmp"
+  mv -f -- "$tmp" "$CACHE_DIR/index.ndjson"
+
+  cut -f5 "$CACHE_DIR/rows.tsv" | grep -v '^$' | sort -u >"$CACHE_DIR/categories.txt"
+}
+
+ensure_cache() {
+  local force=0 offline=0
+  [[ ${1-} == --force ]] && force=1
+  mkdir -p "$CACHE_DIR"
+
+  if (( force )) || ! cache_fresh catalog.json "$CATALOG_TTL_MIN"; then
+    fetch "$CATALOG_URL" "$CACHE_DIR/catalog.json" "Downloading plugin catalog (7 MB)…" || offline=1
+  fi
+  if (( force )) || ! cache_fresh stats.json "$STATS_TTL_MIN"; then
+    fetch "$STATS_URL" "$CACHE_DIR/stats.json" "Downloading plugin stats…" || offline=1
+  fi
+
+  if (( offline )); then
+    touch "$CACHE_DIR/.offline"
+  else
+    rm -f "$CACHE_DIR/.offline"
+  fi
+
+  [[ -f $CACHE_DIR/catalog.json ]] ||
+    fail "could not download $CATALOG_URL and no cached copy exists"
+
+  if [[ ! -f $CACHE_DIR/rows.tsv ||
+        $CACHE_DIR/rows.tsv -ot $CACHE_DIR/catalog.json ||
+        ( -f $CACHE_DIR/stats.json && $CACHE_DIR/rows.tsv -ot $CACHE_DIR/stats.json ) ]]; then
+    flatten_cache
+  fi
+}
+
+# id \t enabled(true|false|?) for every installed plugin. Asks the live shell
+# (covers first-party builtins too); falls back to a directory scan if the
+# shell is not running.
+installed_tsv() {
+  local tmp m
+  tmp=$(mktemp -- "$CACHE_DIR/installed.XXXXXX")
+  if ! omarchy-plugin-list --json 2>/dev/null |
+    jq -r '.[] | [.id, (.enabled | tostring)] | @tsv' >"$tmp" 2>/dev/null || [[ ! -s $tmp ]]; then
+    : >"$tmp"
+    for m in "$PLUGINS_DIR"/*/manifest.json; do
+      [[ -f $m ]] || continue
+      printf '%s\t?\n' "$(jq -r '.id // empty' "$m" 2>/dev/null)"
+    done | grep -v '^	' >"$tmp" || true
+  fi
+  mv -f -- "$tmp" "$CACHE_DIR/installed.tsv"
+}
+
+installed_state() {
+  awk -F '\t' -v id="$1" '$1 == id { print $2; exit }' "$CACHE_DIR/installed.tsv" 2>/dev/null || true
+}
+
+record_for() {
+  grep -m1 -F "{\"id\":\"$1\"," "$CACHE_DIR/index.ndjson" 2>/dev/null ||
+    jq -c --arg id "$1" 'select(.id == $id)' "$CACHE_DIR/index.ndjson" 2>/dev/null | head -n1
+}
+
+# ---------------------------------------------------------------- state ---
+
+load_state() {
+  # shellcheck source=/dev/null
+  [[ -f $STATE_FILE ]] && source "$STATE_FILE"
+  return 0
+}
+
+save_state() {
+  local tmp
+  mkdir -p "$(dirname -- "$STATE_FILE")"
+  tmp=$(mktemp -- "$STATE_FILE.XXXXXX")
+  printf 'SORT=%q\nCATEGORY=%q\nONLY_INSTALLED=%q\nONLY_VERIFIED=%q\n' \
+    "$SORT" "$CATEGORY" "$ONLY_INSTALLED" "$ONLY_VERIFIED" >"$tmp"
+  mv -f -- "$tmp" "$STATE_FILE"
+}
+
+# Print the fzf action string that re-reads rows and header after a state change.
+refresh_actions() {
+  echo 'reload("$OPT_SELF" __rows)+transform-header("$OPT_SELF" __header)'
+}
+
+cycle() {
+  # cycle <current> <next|prev> <values...> → prints the new value
+  local current="$1" direction="$2"; shift 2
+  local -a values=("$@")
+  local i n=${#values[@]}
+  for (( i = 0; i < n; i++ )); do
+    [[ ${values[i]} == "$current" ]] && break
+  done
+  (( i == n )) && i=0
+  if [[ $direction == prev ]]; then
+    i=$(( (i - 1 + n) % n ))
+  else
+    i=$(( (i + 1) % n ))
+  fi
+  printf '%s\n' "${values[i]}"
+}
+
+set_state() {
+  local key="$1" value="$2"
+  load_state
+  case $key in
+  SORT)
+    case $value in
+    next | prev) SORT=$(cycle "$SORT" "$value" "${SORTS[@]}") ;;
+    *)
+      [[ " ${SORTS[*]} " == *" $value "* ]] || fail "unknown sort: $value"
+      SORT=$value
+      ;;
+    esac
+    ;;
+  CATEGORY)
+    local -a cats=("")
+    mapfile -t -O 1 cats <"$CACHE_DIR/categories.txt"
+    case $value in
+    next | prev) CATEGORY=$(cycle "$CATEGORY" "$value" "${cats[@]}") ;;
+    All | all) CATEGORY="" ;;
+    *) CATEGORY=$value ;;
+    esac
+    ;;
+  *) fail "unknown state key: $key" ;;
+  esac
+  save_state
+}
+
+toggle_state() {
+  load_state
+  case $1 in
+  ONLY_INSTALLED) ONLY_INSTALLED=$(( ONLY_INSTALLED ? 0 : 1 )) ;;
+  ONLY_VERIFIED) ONLY_VERIFIED=$(( ONLY_VERIFIED ? 0 : 1 )) ;;
+  *) fail "unknown toggle: $1" ;;
+  esac
+  save_state
+}
+
+# Interactive pickers (run inside fzf's execute(), so they own the tty).
+pick_state() {
+  load_state
+  local choice
+  case $1 in
+  CATEGORY)
+    choice=$({ echo All; cat "$CACHE_DIR/categories.txt"; } |
+      gum choose --header="Filter by category" --selected="${CATEGORY:-All}") || return 0
+    [[ -n $choice ]] && set_state CATEGORY "$choice"
+    ;;
+  SORT)
+    choice=$(printf '%s\n' "${SORTS[@]}" |
+      gum choose --header="Sort by" --selected="$SORT") || return 0
+    [[ -n $choice ]] && set_state SORT "$choice"
+    ;;
+  esac
+}
+
+# ---------------------------------------------------------------- rows ---
+
+age_of() {
+  local file="$CACHE_DIR/$1" secs
+  [[ -f $file ]] || { echo "none"; return; }
+  secs=$(( $(date +%s) - $(stat -c %Y "$file") ))
+  if (( secs < 60 )); then echo "${secs}s"
+  elif (( secs < 3600 )); then echo "$(( secs / 60 ))m"
+  elif (( secs < 86400 )); then echo "$(( secs / 3600 ))h"
+  else echo "$(( secs / 86400 ))d"
+  fi
+}
+
+render_header() {
+  load_state
+  local status=""
+  [[ -f $CACHE_DIR/.offline ]] && status="  [offline — showing stale cache]"
+  printf 'sort: %s ▾   category: %s   installed-only: %s   verified-only: %s   catalog: %s ago (stats %s)%s\n' \
+    "$SORT" "${CATEGORY:-all}" \
+    "$( (( ONLY_INSTALLED )) && echo on || echo off)" \
+    "$( (( ONLY_VERIFIED )) && echo on || echo off)" \
+    "$(age_of catalog.json)" "$(age_of stats.json)" "$status"
+  printf 'enter install   ctrl-t enable/disable   ctrl-x remove   ctrl-o update   ctrl-s/alt-s sort   alt-c category   alt-i/alt-v filters   ctrl-r refresh   alt-o repo   alt-h help\n'
+}
+
+build_rows() {
+  load_state
+  installed_tsv
+  local -a sk
+  case $SORT in
+  stars)   sk=(-k7,7nr -k2,2f) ;;
+  hearts)  sk=(-k8,8nr -k2,2f) ;;
+  views)   sk=(-k9,9nr -k2,2f) ;;
+  copies)  sk=(-k10,10nr -k2,2f) ;;
+  added)   sk=(-k11,11r -k2,2f) ;;
+  updated) sk=(-k12,12r -k2,2f) ;;
+  name)    sk=(-k2,2f) ;;
+  *)       sk=(-k7,7nr -k2,2f) ;;
+  esac
+
+  LC_ALL=C.UTF-8 sort -t $'\t' "${sk[@]}" "$CACHE_DIR/rows.tsv" |
+    LC_ALL=C.UTF-8 awk -F '\t' -v OFS='\t' \
+      -v cat="$CATEGORY" -v oi="$ONLY_INSTALLED" -v ov="$ONLY_VERIFIED" \
+      -v g_star="$G_STAR" -v g_heart="$G_HEART" -v g_views="$G_VIEWS" -v g_copies="$G_COPIES" '
+      FILENAME == ARGV[1] { inst[$1] = $2; next }
+      cat != "" && $5 != cat { next }
+      oi == 1 && !($1 in inst) { next }
+      ov == 1 && $13 != 1 { next }
+      {
+        mark = ($1 in inst) ? (inst[$1] == "true" ? "●" : "○") : " "
+        disp = sprintf("%s %-30.30s %-14.14s %-10.10s %s%5s %s%4s %s%6s %s%4s",
+          mark, $2, $5, $6, g_star, $7, g_heart, $8, g_views, $9, g_copies, $10)
+        print $1, disp, $2, $3, $4
+      }' "$CACHE_DIR/installed.tsv" -
+}
+
+# ---------------------------------------------------------------- preview ---
+
+render_preview() {
+  local id="$1" rec inst cols="${FZF_PREVIEW_COLUMNS:-80}"
+  rec=$(record_for "$id")
+  [[ -n $rec ]] || { echo "No catalog record for $id"; return 0; }
+  inst=$(installed_state "$id")
+
+  jq -r --arg inst "$inst" '
+    def pad($n): . + (" " * ([$n - length, 0] | max));
+    def row($k; $v): "[1m\($k | pad(10))[0m " + (($v // "-") | tostring);
+    def n($x): ($x // 0) | tostring;
+    "[1;32m\(.name)[0m  [2m\(.id)[0m",
+    (if $inst == "true" then "[32m● enabled[0m"
+     elif $inst == "false" then "[33m○ installed (disabled)[0m"
+     elif $inst == "?" then "[33m○ installed[0m"
+     else "[2m  not installed[0m" end),
+    "",
+    row("Author"; .author),
+    row("Version"; .version),
+    row("Category"; .category),
+    row("Kind"; .kind),
+    row("Tags"; ((.tags // []) | join(", "))),
+    row("Stats"; "[33m'"$G_STAR"'[0m \(n(.stars))   [31m'"$G_HEART"'[0m \(n(.stats.hearts))   '"$G_VIEWS"' \(n(.stats.views))   '"$G_COPIES"' \(n(.stats.copies))"),
+    row("Verified"; (.verificationStatus // (if .sourceType == "builtin" then "built-in" else "unknown" end))
+                    + (if .verificationMethod then " (\(.verificationMethod))" else "" end)),
+    row("Status"; .status),
+    row("License"; .license),
+    row("Repo"; .repo),
+    row("Added"; .addedAt),
+    row("Updated"; ((.repositoryUpdatedAt // "") | .[0:10])),
+    row("Release"; (.repositoryRelease.tag // "-")),
+    "",
+    (.description // ""),
+    "",
+    row("Install"; (if (.installCommand // "") == "" then "not installable (\(.status // "unknown"))" else .installCommand end)),
+    (if (.installNote // "") != "" then "[33mNote:[0m \(.installNote)" else empty end)
+  ' <<<"$rec" | fold -s -w "$cols"
+}
+
+# ---------------------------------------------------------------- actions ---
+
+run_cmd() {
+  if (( DRY_RUN )); then
+    echo "[dry-run] $*"
+    return 0
+  fi
+  echo "→ $*"
+  "$@"
+}
+
+yes_flag() {
+  (( ASSUME_YES )) && echo --yes
+  return 0
+}
+
+do_install() {
+  local id="$1" rec source_type avail repo status note cmd_url
+  rec=$(record_for "$id")
+  [[ -n $rec ]] || { echo "$id: not in catalog"; return 1; }
+  IFS=$'\t' read -r source_type avail repo status note cmd_url < <(
+    jq -r '[ .sourceType // "community", (.installAvailable | tostring), .repo // "",
+             .status // "", .installNote // "",
+             ((.installCommand // "") | capture("^omarchy plugin add (?<u>[^ ]+)")?.u // "") ] | @tsv' <<<"$rec")
+
+  if [[ -n $(installed_state "$id") ]]; then
+    echo "$id: already installed — use ctrl-o to update or ctrl-t to enable/disable"
+    return 0
+  fi
+  if [[ $source_type == builtin ]]; then
+    echo "$id: built into Omarchy — use ctrl-t to enable/disable it"
+    return 0
+  fi
+  if [[ $avail != true || ( -z $repo && -z $cmd_url ) ]]; then
+    echo "$id: not installable (${status:-unknown})"
+    [[ -n $note ]] && echo "  $note"
+    return 0
+  fi
+  # shellcheck disable=SC2046
+  run_cmd omarchy-plugin-add "${cmd_url:-$repo}" --enable $(yes_flag)
+}
+
+do_remove() {
+  local id="$1"
+  [[ -n $(installed_state "$id") ]] || { echo "$id: not installed"; return 0; }
+  [[ -d $PLUGINS_DIR/$id || -L $PLUGINS_DIR/$id ]] ||
+    { echo "$id: built into Omarchy — it cannot be removed, only disabled (ctrl-t)"; return 0; }
+  # shellcheck disable=SC2046
+  run_cmd omarchy-plugin-remove "$id" $(yes_flag)
+}
+
+do_toggle_enable() {
+  local id="$1" state
+  state=$(installed_state "$id")
+  case $state in
+  "") echo "$id: not installed — press enter to install it" ;;
+  true) run_cmd omarchy-plugin-disable "$id" ;;
+  *) run_cmd omarchy-plugin-enable "$id" ;;
+  esac
+}
+
+do_update() {
+  local id="$1"
+  [[ -n $(installed_state "$id") ]] || { echo "$id: not installed"; return 0; }
+  [[ -d $PLUGINS_DIR/$id/.git ]] ||
+    { echo "$id: not a git-managed plugin, nothing to update"; return 0; }
+  # shellcheck disable=SC2046
+  run_cmd omarchy-plugin-update "$id" $(yes_flag)
+}
+
+run_action() {
+  local verb="$1" id
+  shift
+  (( $# )) || return 0
+  for id in "$@"; do
+    echo
+    case $verb in
+    install) do_install "$id" ;;
+    remove) do_remove "$id" ;;
+    toggle-enable) do_toggle_enable "$id" ;;
+    update) do_update "$id" ;;
+    esac || echo "$id: $verb failed"
+  done
+  omarchy-show-done
+}
+
+open_repo() {
+  local repo
+  repo=$(record_for "$1" | jq -r '.repo // empty')
+  [[ -n $repo ]] || return 0
+  setsid -f xdg-open "$repo" >/dev/null 2>&1
+}
+
+show_help() {
+  cat <<HELP
+
+  Plugin TUI — key bindings
+
+  type            fuzzy search (name, id, author, tags)
+  tab             multi-select
+  enter           install selected plugin(s)          → omarchy plugin add <repo> --enable
+  ctrl-t          enable / disable an installed plugin
+  ctrl-x          remove an installed plugin
+  ctrl-o          update an installed plugin
+  ctrl-s          cycle sort (stars → hearts → views → copies → added → updated → name)
+  alt-s           pick sort from a list
+  alt-c           pick category from a list        alt-C  cycle category
+  alt-i           toggle installed-only            alt-v  toggle verified-only
+  ctrl-r          re-download catalog and stats
+  alt-o           open the plugin repo in the browser
+  alt-p           toggle preview                   alt-j/k, alt-d/u  scroll preview
+  esc / ctrl-c    quit
+
+  ● enabled   ○ installed but disabled
+  Cache: $CACHE_DIR
+HELP
+  omarchy-show-done
+}
+
+# ---------------------------------------------------------------- main ---
+
+fzf_main() {
+  local -a fzf_args=(
+    --multi
+    --delimiter $'\t'
+    --with-nth 2
+    --nth 1..5
+    --accept-nth 1
+    --tiebreak index
+    --header "$(render_header)"
+    --prompt 'plugins> '
+    --preview '"$OPT_SELF" __preview {1}'
+    --preview-window 'down:65%:wrap'
+    --preview-label 'alt-p: toggle preview, alt-j/k: scroll, tab: multi-select, alt-h: help'
+    --preview-label-pos 'bottom'
+    --bind 'alt-p:toggle-preview'
+    --bind 'alt-d:preview-half-page-down,alt-u:preview-half-page-up'
+    --bind 'alt-k:preview-up,alt-j:preview-down'
+    --bind 'ctrl-s:transform("$OPT_SELF" __set SORT next)'
+    --bind 'alt-s:execute("$OPT_SELF" __pick SORT)+transform("$OPT_SELF" __refresh)'
+    --bind 'alt-c:execute("$OPT_SELF" __pick CATEGORY)+transform("$OPT_SELF" __refresh)'
+    --bind 'alt-C:transform("$OPT_SELF" __set CATEGORY next)'
+    --bind 'alt-i:transform("$OPT_SELF" __toggle ONLY_INSTALLED)'
+    --bind 'alt-v:transform("$OPT_SELF" __toggle ONLY_VERIFIED)'
+    --bind 'ctrl-r:execute("$OPT_SELF" __refresh-cache)+transform("$OPT_SELF" __refresh)'
+    --bind 'enter:execute("$OPT_SELF" __install {+1})+deselect-all+reload("$OPT_SELF" __rows)'
+    --bind 'ctrl-x:execute("$OPT_SELF" __remove {+1})+deselect-all+reload("$OPT_SELF" __rows)'
+    --bind 'ctrl-t:execute("$OPT_SELF" __toggle-enable {+1})+deselect-all+reload("$OPT_SELF" __rows)'
+    --bind 'ctrl-o:execute("$OPT_SELF" __update {+1})+deselect-all+reload("$OPT_SELF" __rows)'
+    --bind 'alt-o:execute-silent("$OPT_SELF" __open {1})'
+    --bind 'alt-h:execute("$OPT_SELF" __help)'
+    --color 'pointer:green,marker:green'
+  )
+  build_rows | SHELL=/bin/bash fzf "${fzf_args[@]}" >/dev/null || true
+}
+
+main() {
+  local force=""
+  while (( $# > 0 )); do
+    case "$1" in
+    --refresh) force=--force ;;
+    --yes | -y) ASSUME_YES=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    -h | --help) usage; exit 0 ;;
+    *) fail "unknown option: $1" ;;
+    esac
+    shift
+  done
+
+  # Launched from a .desktop entry or app launcher without a terminal.
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    exec xdg-terminal-exec --app-id=org.omarchy.terminal "$SELF" "$@"
+  fi
+
+  local dep
+  for dep in fzf jq curl gum; do
+    command -v "$dep" >/dev/null || fail "$dep is required"
+  done
+
+  ensure_cache $force
+
+  local state_dir
+  state_dir=$(mktemp -d -- "${XDG_RUNTIME_DIR:-/tmp}/omarchy-plugin-tui.XXXXXX")
+  # shellcheck disable=SC2064
+  trap "rm -rf -- '$state_dir'" EXIT
+  export OPT_SELF="$SELF" OPT_STATE="$state_dir/state"
+  export OMARCHY_PLUGIN_TUI_DRY_RUN="$DRY_RUN" OMARCHY_PLUGIN_TUI_YES="$ASSUME_YES"
+  STATE_FILE="$OPT_STATE"
+  save_state
+
+  fzf_main
+}
+
+case "${1-}" in
+"" | -* )        main "$@" ;;
+__rows)          build_rows ;;
+__preview)       render_preview "${2:?plugin id}" ;;
+__header)        render_header ;;
+__set)           set_state "${2:?key}" "${3:?value}"; refresh_actions ;;
+__toggle)        toggle_state "${2:?key}"; refresh_actions ;;
+__pick)          pick_state "${2:?key}" ;;
+__refresh)       refresh_actions ;;
+__refresh-cache) ensure_cache --force ;;
+__install)       run_action install "${@:2}" ;;
+__remove)        run_action remove "${@:2}" ;;
+__toggle-enable) run_action toggle-enable "${@:2}" ;;
+__update)        run_action update "${@:2}" ;;
+__open)          open_repo "${2:?plugin id}" ;;
+__help)          show_help ;;
+*)               fail "unknown subcommand: $1" ;;
+esac

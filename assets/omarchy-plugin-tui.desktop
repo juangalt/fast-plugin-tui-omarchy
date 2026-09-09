@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Plugin TUI
+GenericName=Omarchy Plugin Browser
+Comment=Browse, search, sort and install Omarchy plugins
+Exec=xdg-terminal-exec --app-id=org.omarchy.terminal @PLUGIN_DIR@/bin/omarchy-plugin-tui
+Icon=system-software-install
+Terminal=false
+Categories=Settings;PackageManager;
+Keywords=Omarchy;Plugin;Extension;Marketplace;
+StartupNotify=false
+X-Omarchy-Plugin-TUI-Managed=true
