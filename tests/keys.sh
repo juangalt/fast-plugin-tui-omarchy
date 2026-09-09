@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# End-to-end key-binding tests for bin/oma-quick-plugin-tui.
+# End-to-end key-binding tests for bin/fast-plugin-tui-omarchy.
 #
 # Every case starts the TUI under a pseudo-terminal (tests/ptydrive.py, which
 # also answers terminal queries like a real terminal so gum behaves as it does
 # in foot), injects key bytes, and asserts on the control-sequence-stripped
 # typescript. Runs in dry-run mode against a private cache seeded from
-# ~/.cache/oma-quick-plugin-tui (override with OPT_TEST_SEED=<dir holding
+# ~/.cache/fast-plugin-tui-omarchy (override with FPTO_TEST_SEED=<dir holding
 # catalog.json + stats.json>), so the real cache and any running TUI are
 # never touched. Nothing is downloaded: ctrl-r refreshes from file:// URLs.
 #
@@ -17,13 +17,13 @@ set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname "$HERE")
-TUI=$ROOT/bin/oma-quick-plugin-tui
+TUI=$ROOT/bin/fast-plugin-tui-omarchy
 DRIVER=$HERE/ptydrive.py
-SEED=${OPT_TEST_SEED:-$HOME/.cache/oma-quick-plugin-tui}
+SEED=${FPTO_TEST_SEED:-$HOME/.cache/fast-plugin-tui-omarchy}
 COLS=${COLS_OVERRIDE:-160}
 ROWS=${ROWS_OVERRIDE:-45}
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/opt-keys.XXXXXX")
-export OPT_TEST_ID="opt-keys-$$-$RANDOM"   # every process we start inherits this
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/fpto-keys.XXXXXX")
+export FPTO_TEST_ID="fpto-keys-$$-$RANDOM"   # every process we start inherits this
 
 pass=0 fail=0
 declare -a REPORT=()
@@ -37,7 +37,7 @@ die() { echo "keys.sh: $*" >&2; exit 2; }
 test_pids() {
   local f
   for f in /proc/[0-9]*/environ; do
-    grep -qzs "^OPT_TEST_ID=$OPT_TEST_ID\$" "$f" 2>/dev/null || continue
+    grep -qzs "^FPTO_TEST_ID=$FPTO_TEST_ID\$" "$f" 2>/dev/null || continue
     f=${f#/proc/}; f=${f%/environ}
     [[ $f == "$$" ]] || echo "$f"
   done
@@ -58,7 +58,7 @@ trap cleanup EXIT
 
 [[ -x $TUI ]] || die "not found: $TUI"
 [[ -f $SEED/catalog.json && -f $SEED/stats.json ]] ||
-  die "need $SEED/catalog.json and stats.json to seed the test cache (run the TUI once, or set OPT_TEST_SEED)"
+  die "need $SEED/catalog.json and stats.json to seed the test cache (run the TUI once, or set FPTO_TEST_SEED)"
 command -v python3 >/dev/null || die "python3 is required"
 command -v ss >/dev/null || die "ss (iproute2) is required for the listener check"
 
@@ -68,15 +68,15 @@ cp -- "$SEED/catalog.json" "$SEED/stats.json" "$WORK/seed/"
 # xdg-open shim: log instead of opening a browser.
 cat >"$WORK/bin/xdg-open" <<'SHIM'
 #!/bin/bash
-printf '%s\n' "$*" >>"$OPT_TEST_XDG_LOG"
+printf '%s\n' "$*" >>"$FPTO_TEST_XDG_LOG"
 SHIM
 chmod +x "$WORK/bin/xdg-open"
-export OPT_TEST_XDG_LOG="$WORK/xdg-open.log"
+export FPTO_TEST_XDG_LOG="$WORK/xdg-open.log"
 
 export XDG_CACHE_HOME="$WORK/cache" XDG_RUNTIME_DIR="$WORK/run"
-export OMA_QUICK_PLUGIN_TUI_DRY_RUN=1
-export OMA_QUICK_PLUGIN_TUI_CATALOG_URL="file://$WORK/seed/catalog.json"
-export OMA_QUICK_PLUGIN_TUI_STATS_URL="file://$WORK/seed/stats.json"
+export FAST_PLUGIN_TUI_OMARCHY_DRY_RUN=1
+export FAST_PLUGIN_TUI_OMARCHY_CATALOG_URL="file://$WORK/seed/catalog.json"
+export FAST_PLUGIN_TUI_OMARCHY_STATS_URL="file://$WORK/seed/stats.json"
 export PATH="$WORK/bin:$PATH"
 
 # Warm the private cache headlessly (plain curl from file://, no gum).
@@ -160,11 +160,11 @@ nowaitscreen 1 $POPUP"
 case_esc() {
   run_case esc <<STEPS
 $MAIN
-waitscreen 5 \\A─ Oma Quick Plugin TUI - v0\\.1 ─
+waitscreen 5 \\A─ Fast Plugin TUI for Omarchy - v0\\.1 ─
 send \\x1b
 exit 5
 STEPS
-  verdict esc "esc quits (exit 0); title 'Oma Quick Plugin TUI - v0.1' is at the top-left of the screen"
+  verdict esc "esc quits (exit 0); title 'Fast Plugin TUI for Omarchy - v0.1' is at the top-left of the screen"
 }
 
 case_ctrl_q() {
@@ -329,8 +329,8 @@ send \\x1b
 exit 5
 STEPS
   local extra=""
-  grep -q '^https\?://' "$OPT_TEST_XDG_LOG" 2>/dev/null || extra="xdg-open-not-called"
-  verdict alt_o "alt-o hands the repo URL to xdg-open (got: $(head -n1 "$OPT_TEST_XDG_LOG" 2>/dev/null))" "$extra"
+  grep -q '^https\?://' "$FPTO_TEST_XDG_LOG" 2>/dev/null || extra="xdg-open-not-called"
+  verdict alt_o "alt-o hands the repo URL to xdg-open (got: $(head -n1 "$FPTO_TEST_XDG_LOG" 2>/dev/null))" "$extra"
 }
 
 # action_case <name> <key-bytes> <regex for the message line> <expectation>
@@ -358,7 +358,7 @@ case_ctrl_o() { action_case ctrl_o '\x0f' 'not installed|\[dry-run\] omarchy-plu
 
 case_ctrl_r() {
   # Age the cache so the refresh is visible in the header (2h ago → 0s ago).
-  touch -d '-2 hours' "$WORK/cache/oma-quick-plugin-tui/catalog.json" "$WORK/cache/oma-quick-plugin-tui/stats.json"
+  touch -d '-2 hours' "$WORK/cache/fast-plugin-tui-omarchy/catalog.json" "$WORK/cache/fast-plugin-tui-omarchy/stats.json"
   run_case ctrl_r <<STEPS
 waitscreen 30 $LOADED
 waitscreen 5 catalog: 2h ago
@@ -440,7 +440,7 @@ STEPS
   wait
   local extra="" probe
   probe=$(cat "$out" 2>/dev/null)
-  [[ $probe == *"sock=run/oma-quick-plugin-tui."*"/fzf.sock "* ]] || extra+=" no-unix-socket"
+  [[ $probe == *"sock=run/fast-plugin-tui-omarchy."*"/fzf.sock "* ]] || extra+=" no-unix-socket"
   [[ $probe == *" nokey=401 "* ]] || extra+=" no-key-not-401"
   [[ $probe == *" badkey=401 "* ]] || extra+=" bad-key-not-401"
   [[ $probe == *" tcp=0" ]] || extra+=" tcp-listener"

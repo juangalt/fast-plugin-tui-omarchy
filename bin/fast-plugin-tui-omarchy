@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# oma-quick-plugin-tui — browse, search, sort and install Omarchy marketplace
+# fast-plugin-tui-omarchy — browse, search, sort and install Omarchy marketplace
 # plugins from a fzf TUI, in the style of omarchy-pkg-aur-install.
 #
 # Data comes from two JSON endpoints published by the marketplace:
 #   catalog.json  — plugin metadata incl. category, tags, GitHub stars
 #   /v1/stats     — hearts / views / copies per plugin id
-# Both are cached under $XDG_CACHE_HOME/oma-quick-plugin-tui and joined once by
+# Both are cached under $XDG_CACHE_HOME/fast-plugin-tui-omarchy and joined once by
 # jq into a TSV that fzf reloads instantly on every sort/filter change.
 #
 # fzf key bindings re-invoke this script with a `__subcommand` (see dispatch at
@@ -16,17 +16,17 @@
 set -euo pipefail
 
 SELF=$(realpath -- "${BASH_SOURCE[0]}")
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/oma-quick-plugin-tui"
-CATALOG_URL="${OMA_QUICK_PLUGIN_TUI_CATALOG_URL:-https://plugins.omarchy.org/catalog.json}"
-STATS_URL="${OMA_QUICK_PLUGIN_TUI_STATS_URL:-https://api.omarchyplugins.com/v1/stats}"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/fast-plugin-tui-omarchy"
+CATALOG_URL="${FAST_PLUGIN_TUI_OMARCHY_CATALOG_URL:-https://plugins.omarchy.org/catalog.json}"
+STATS_URL="${FAST_PLUGIN_TUI_OMARCHY_STATS_URL:-https://api.omarchyplugins.com/v1/stats}"
 CATALOG_TTL_MIN=360
 STATS_TTL_MIN=15
 PLUGINS_DIR="$HOME/.config/omarchy/plugins"
 SORTS=(stars hearts views copies added updated name)
-DRY_RUN="${OMA_QUICK_PLUGIN_TUI_DRY_RUN:-0}"
-ASSUME_YES="${OMA_QUICK_PLUGIN_TUI_YES:-0}"
-STATE_FILE="${OMA_QUICK_PLUGIN_TUI_STATE:-$CACHE_DIR/state}"
-state_dir="${OMA_QUICK_PLUGIN_TUI_STATE_DIR-}"   # per-run private dir (state file, fzf socket); set in main()
+DRY_RUN="${FAST_PLUGIN_TUI_OMARCHY_DRY_RUN:-0}"
+ASSUME_YES="${FAST_PLUGIN_TUI_OMARCHY_YES:-0}"
+STATE_FILE="${FAST_PLUGIN_TUI_OMARCHY_STATE:-$CACHE_DIR/state}"
+state_dir="${FAST_PLUGIN_TUI_OMARCHY_STATE_DIR-}"   # per-run private dir (state file, fzf socket); set in main()
 
 SORT=stars
 CATEGORY=""
@@ -44,10 +44,10 @@ G_VIEWS=$''
 G_COPIES=$''
 
 fail() {
-  echo "oma-quick-plugin-tui: $*" >&2
+  echo "fast-plugin-tui-omarchy: $*" >&2
   # When we spawned our own terminal window, keep it open long enough for the
   # message to be read (omarchy-show-done is a no-op without a tty).
-  [[ -n ${OMA_QUICK_PLUGIN_TUI_RELAUNCHED-} ]] && omarchy-show-done
+  [[ -n ${FAST_PLUGIN_TUI_OMARCHY_RELAUNCHED-} ]] && omarchy-show-done
   exit 1
 }
 
@@ -59,12 +59,12 @@ ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 valid_id() { [[ $1 =~ $ID_RE && $1 != *..* ]]; }
 sanitize() { printf '%s' "${1//[[:cntrl:]]/}"; }
 
-# "Oma Quick Plugin TUI - v0.1": major.minor from the manifest next to the script.
+# "Fast Plugin TUI for Omarchy - v0.1": major.minor from the manifest next to the script.
 title() {
   local v
   v=$(jq -r '.version // empty' "$(dirname -- "$SELF")/../manifest.json" 2>/dev/null) || v=""
   if [[ $v =~ ^([0-9]+\.[0-9]+) ]]; then v=${BASH_REMATCH[1]}; else v=0.1; fi
-  printf 'Oma Quick Plugin TUI - v%s\n' "$v"
+  printf 'Fast Plugin TUI for Omarchy - v%s\n' "$v"
 }
 
 # Programs that own the tty while fzf waits on an execute() — gum 2.0 above
@@ -82,14 +82,14 @@ drain_tty() {
 
 usage() {
   cat <<USAGE
-Usage: oma-quick-plugin-tui [--refresh] [--yes] [--dry-run] [-h]
+Usage: fast-plugin-tui-omarchy [--refresh] [--yes] [--dry-run] [-h]
 
   --refresh   re-download the catalog and stats before starting
   --yes, -y   pass --yes to omarchy plugin add/remove/update (skips confirmations)
   --dry-run   print the omarchy commands instead of running them
 
-Environment: OMA_QUICK_PLUGIN_TUI_YES=1, OMA_QUICK_PLUGIN_TUI_DRY_RUN=1
-             OMA_QUICK_PLUGIN_TUI_CATALOG_URL, OMA_QUICK_PLUGIN_TUI_STATS_URL (any curl URL, e.g. file://…)
+Environment: FAST_PLUGIN_TUI_OMARCHY_YES=1, FAST_PLUGIN_TUI_OMARCHY_DRY_RUN=1
+             FAST_PLUGIN_TUI_OMARCHY_CATALOG_URL, FAST_PLUGIN_TUI_OMARCHY_STATS_URL (any curl URL, e.g. file://…)
 Cache: $CACHE_DIR
 USAGE
 }
@@ -282,7 +282,7 @@ save_state() {
 
 # Print the fzf action string that re-reads rows and header after a state change.
 refresh_actions() {
-  echo 'reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)+transform-header("$OMA_QUICK_PLUGIN_TUI_SELF" __header)'
+  echo 'reload("$FAST_PLUGIN_TUI_OMARCHY_SELF" __rows)+transform-header("$FAST_PLUGIN_TUI_OMARCHY_SELF" __header)'
 }
 
 now_ms() { date +%s%3N; }
@@ -439,6 +439,9 @@ render_header() {
 
 build_rows() {
   load_state
+  # Cold cache (headless call before the first run): derive the rows now.
+  if [[ ! -f $CACHE_DIR/rows.tsv && -f $CACHE_DIR/catalog.json ]]; then flatten_cache; fi
+  [[ -f $CACHE_DIR/rows.tsv ]] || fail "no catalog cache yet — run: $(basename -- "$SELF") --refresh"
   installed_tsv
   local -a sk
   case $SORT in
@@ -455,10 +458,10 @@ build_rows() {
   # The category goes in through the environment: awk -v would interpret
   # backslash escapes in it.
   LC_ALL=C.UTF-8 sort -t $'\t' "${sk[@]}" "$CACHE_DIR/rows.tsv" |
-    LC_ALL=C.UTF-8 OQPT_CATEGORY="$CATEGORY" awk -F '\t' -v OFS='\t' \
+    LC_ALL=C.UTF-8 FPTO_CATEGORY="$CATEGORY" awk -F '\t' -v OFS='\t' \
       -v oi="$ONLY_INSTALLED" -v ov="$ONLY_VERIFIED" \
       -v g_star="$G_STAR" -v g_heart="$G_HEART" -v g_views="$G_VIEWS" -v g_copies="$G_COPIES" '
-      BEGIN { cat = ENVIRON["OQPT_CATEGORY"] }
+      BEGIN { cat = ENVIRON["FPTO_CATEGORY"] }
       FILENAME == ARGV[1] { inst[$1] = $2; next }
       cat != "" && $5 != cat { next }
       oi == 1 && !($1 in inst) { next }
@@ -698,7 +701,7 @@ fzf_main() {
     --border top
     --border-label " $title "
     --border-label-pos 2
-    --preview '"$OMA_QUICK_PLUGIN_TUI_SELF" __preview {1}'
+    --preview '"$FAST_PLUGIN_TUI_OMARCHY_SELF" __preview {1}'
     --preview-window 'down:65%:wrap'
     --preview-label 'alt-p: toggle preview, alt-j/k: scroll, tab: multi-select, ?: help'
     --preview-label-pos 'bottom'
@@ -718,21 +721,21 @@ fzf_main() {
     --bind 'alt-p:toggle-preview'
     --bind 'alt-d:preview-half-page-down,alt-u:preview-half-page-up'
     --bind 'alt-k:preview-up,alt-j:preview-down'
-    --bind 'alt-s:transform("$OMA_QUICK_PLUGIN_TUI_SELF" __set SORT next)'
-    --bind 'alt-S:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __pick SORT)+transform("$OMA_QUICK_PLUGIN_TUI_SELF" __refresh)'
-    --bind 'alt-c:transform("$OMA_QUICK_PLUGIN_TUI_SELF" __set CATEGORY next)'
-    --bind 'alt-C:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __pick CATEGORY)+transform("$OMA_QUICK_PLUGIN_TUI_SELF" __refresh)'
-    --bind 'alt-i:transform("$OMA_QUICK_PLUGIN_TUI_SELF" __toggle ONLY_INSTALLED)'
-    --bind 'alt-v:transform("$OMA_QUICK_PLUGIN_TUI_SELF" __toggle ONLY_VERIFIED)'
-    --bind 'alt-o:execute-silent("$OMA_QUICK_PLUGIN_TUI_SELF" __open {1})'
-    --bind 'alt-h:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __help)+transform-header("$OMA_QUICK_PLUGIN_TUI_SELF" __header)'
-    --bind '?:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __help)+transform-header("$OMA_QUICK_PLUGIN_TUI_SELF" __header)'
+    --bind 'alt-s:transform("$FAST_PLUGIN_TUI_OMARCHY_SELF" __set SORT next)'
+    --bind 'alt-S:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __pick SORT)+transform("$FAST_PLUGIN_TUI_OMARCHY_SELF" __refresh)'
+    --bind 'alt-c:transform("$FAST_PLUGIN_TUI_OMARCHY_SELF" __set CATEGORY next)'
+    --bind 'alt-C:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __pick CATEGORY)+transform("$FAST_PLUGIN_TUI_OMARCHY_SELF" __refresh)'
+    --bind 'alt-i:transform("$FAST_PLUGIN_TUI_OMARCHY_SELF" __toggle ONLY_INSTALLED)'
+    --bind 'alt-v:transform("$FAST_PLUGIN_TUI_OMARCHY_SELF" __toggle ONLY_VERIFIED)'
+    --bind 'alt-o:execute-silent("$FAST_PLUGIN_TUI_OMARCHY_SELF" __open {1})'
+    --bind 'alt-h:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __help)+transform-header("$FAST_PLUGIN_TUI_OMARCHY_SELF" __header)'
+    --bind '?:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __help)+transform-header("$FAST_PLUGIN_TUI_OMARCHY_SELF" __header)'
     # actions: ctrl (and enter)
-    --bind 'ctrl-r:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __refresh-cache)+transform("$OMA_QUICK_PLUGIN_TUI_SELF" __refresh)'
-    --bind 'enter:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __install {+1})+deselect-all+reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)'
-    --bind 'ctrl-x:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __remove {+1})+deselect-all+reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)'
-    --bind 'ctrl-t:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __toggle-enable {+1})+deselect-all+reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)'
-    --bind 'ctrl-o:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __update {+1})+deselect-all+reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)'
+    --bind 'ctrl-r:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __refresh-cache)+transform("$FAST_PLUGIN_TUI_OMARCHY_SELF" __refresh)'
+    --bind 'enter:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __install {+1})+deselect-all+reload("$FAST_PLUGIN_TUI_OMARCHY_SELF" __rows)'
+    --bind 'ctrl-x:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __remove {+1})+deselect-all+reload("$FAST_PLUGIN_TUI_OMARCHY_SELF" __rows)'
+    --bind 'ctrl-t:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __toggle-enable {+1})+deselect-all+reload("$FAST_PLUGIN_TUI_OMARCHY_SELF" __rows)'
+    --bind 'ctrl-o:execute("$FAST_PLUGIN_TUI_OMARCHY_SELF" __update {+1})+deselect-all+reload("$FAST_PLUGIN_TUI_OMARCHY_SELF" __rows)'
     --color 'pointer:green,marker:green'
   )
   build_rows | SHELL=/bin/bash fzf "${fzf_args[@]}" >/dev/null || true
@@ -756,10 +759,10 @@ main() {
   # one and run there. TUI.float is the app-id Omarchy's own TUI launchers
   # use — Hyprland floats and centres it at 875x600 (default/hypr/apps/system.lua).
   if [[ ! -t 0 || ! -t 1 ]]; then
-    [[ -z ${OMA_QUICK_PLUGIN_TUI_RELAUNCHED-} ]] ||
+    [[ -z ${FAST_PLUGIN_TUI_OMARCHY_RELAUNCHED-} ]] ||
       fail "no terminal available (relaunch did not get a tty)"
     command -v xdg-terminal-exec >/dev/null || fail "xdg-terminal-exec is required to open a terminal"
-    export OMA_QUICK_PLUGIN_TUI_RELAUNCHED=1
+    export FAST_PLUGIN_TUI_OMARCHY_RELAUNCHED=1
     if command -v omarchy-launch-tui >/dev/null; then
       exec omarchy-launch-tui --app-id=TUI.float "$SELF" "${argv[@]}"
     fi
@@ -775,14 +778,14 @@ main() {
   drain_tty
 
   # Private (0700) per-run state dir: the state file and fzf's unix socket.
-  state_dir=$(mktemp -d -- "${XDG_RUNTIME_DIR:-/tmp}/oma-quick-plugin-tui.XXXXXX")
+  state_dir=$(mktemp -d -- "${XDG_RUNTIME_DIR:-/tmp}/fast-plugin-tui-omarchy.XXXXXX")
   trap 'rm -rf -- "$state_dir"' EXIT
-  export OMA_QUICK_PLUGIN_TUI_SELF="$SELF" OMA_QUICK_PLUGIN_TUI_STATE="$state_dir/state" OMA_QUICK_PLUGIN_TUI_STATE_DIR="$state_dir"
-  export OMA_QUICK_PLUGIN_TUI_DRY_RUN="$DRY_RUN" OMA_QUICK_PLUGIN_TUI_YES="$ASSUME_YES"
+  export FAST_PLUGIN_TUI_OMARCHY_SELF="$SELF" FAST_PLUGIN_TUI_OMARCHY_STATE="$state_dir/state" FAST_PLUGIN_TUI_OMARCHY_STATE_DIR="$state_dir"
+  export FAST_PLUGIN_TUI_OMARCHY_DRY_RUN="$DRY_RUN" FAST_PLUGIN_TUI_OMARCHY_YES="$ASSUME_YES"
   # fzf's --listen server requires this key on every request.
   FZF_API_KEY=$(head -c 32 /dev/urandom | base64)
   export FZF_API_KEY
-  STATE_FILE="$OMA_QUICK_PLUGIN_TUI_STATE"
+  STATE_FILE="$FAST_PLUGIN_TUI_OMARCHY_STATE"
   save_state
 
   fzf_main

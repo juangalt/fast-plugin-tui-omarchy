@@ -1,10 +1,10 @@
-# Oma Quick Plugin TUI
+# Fast Plugin TUI for Omarchy
 
 A terminal UI for the [Omarchy plugin marketplace](https://plugins.omarchy.org),
 in the same style as Omarchy's *Install → AUR* picker: fuzzy search, a details
 pane, and one keypress to install.
 
-![Oma Quick Plugin TUI](preview.png)
+![Fast Plugin TUI for Omarchy](preview.png)
 
 - **Search** by name, author, tag or id (author · tags · id are shown dimmed at the end of each row)
 - **Filter** by category (Widgets, Productivity, System, Hardware, …), installed-only, verified-only
@@ -18,24 +18,24 @@ ship with Omarchy.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/juangalt/oma-quick-plugin-tui.git --enable
+omarchy plugin add https://github.com/juangalt/fast-plugin-tui-omarchy.git --enable
 ```
 
-Enabling the plugin adds an **Oma Quick Plugin TUI** entry to the app launcher
+Enabling the plugin adds an **Fast Plugin TUI for Omarchy** entry to the app launcher
 (`SUPER + SPACE`). You can also run it directly:
 
 ```bash
-~/.config/omarchy/plugins/juangalt.oma-quick-plugin-tui/bin/oma-quick-plugin-tui
+~/.config/omarchy/plugins/juangalt.fast-plugin-tui-omarchy/bin/fast-plugin-tui-omarchy
 ```
 
 ### Remove
 
 ```bash
-omarchy plugin remove juangalt.oma-quick-plugin-tui
+omarchy plugin remove juangalt.fast-plugin-tui-omarchy
 ```
 
 This deletes the plugin checkout and its app-launcher entry. The catalog cache
-in `~/.cache/oma-quick-plugin-tui/` can be deleted by hand if you want it gone too.
+in `~/.cache/fast-plugin-tui-omarchy/` can be deleted by hand if you want it gone too.
 
 ### Omarchy menu entry (optional)
 
@@ -44,7 +44,7 @@ To get a *Plugins* row at the bottom of the *Install* submenu, add this to
 the same Nerd Font puzzle glyph Omarchy uses for its own plugin menu):
 
 ```jsonc
-"install.plugins": {"icon":"󰐱","label":"Plugins","action":"omarchy-launch-tui --app-id=TUI.float ~/.config/omarchy/plugins/juangalt.oma-quick-plugin-tui/bin/oma-quick-plugin-tui"},
+"install.plugins": {"icon":"󰐱","label":"Plugins","action":"omarchy-launch-tui --app-id=TUI.float ~/.config/omarchy/plugins/juangalt.fast-plugin-tui-omarchy/bin/fast-plugin-tui-omarchy"},
 ```
 
 ### Keybinding (optional)
@@ -54,7 +54,7 @@ In `~/.config/hypr/bindings.lua` (check the key is free first with
 
 ```lua
 o.bind("SUPER + SHIFT + CTRL + P", "Plugins",
-  "omarchy-launch-tui --app-id=TUI.float $HOME/.config/omarchy/plugins/juangalt.oma-quick-plugin-tui/bin/oma-quick-plugin-tui")
+  "omarchy-launch-tui --app-id=TUI.float $HOME/.config/omarchy/plugins/juangalt.fast-plugin-tui-omarchy/bin/fast-plugin-tui-omarchy")
 ```
 
 The window uses the `TUI.float` app-id, so Omarchy floats and centres it like
@@ -90,7 +90,7 @@ In the list, `●` marks an enabled plugin and `○` one that is installed but d
 
 Install, remove and update go through the official `omarchy plugin` commands
 with their normal confirmations (the untrusted-code warning, the bar-section
-picker for bar widgets, the update diff). Set `OMA_QUICK_PLUGIN_TUI_YES=1` or pass
+picker for bar widgets, the update diff). Set `FAST_PLUGIN_TUI_OMARCHY_YES=1` or pass
 `--yes` to skip them when batch-installing.
 
 ## Data
@@ -100,7 +100,7 @@ picker for bar widgets, the update diff). Set `OMA_QUICK_PLUGIN_TUI_YES=1` or pa
 | `https://plugins.omarchy.org/catalog.json` | names, categories, tags, stars, verification, install command | 6 h |
 | `https://api.omarchyplugins.com/v1/stats` | hearts, views, copies | 15 min |
 
-Cache lives in `~/.cache/oma-quick-plugin-tui/`. If a download fails the last
+Cache lives in `~/.cache/fast-plugin-tui-omarchy/`. If a download fails the last
 cached copy is used and the header says so. Installed state comes from
 `omarchy plugin list --json` on every reload; if `omarchy-shell` is not running
 it falls back to scanning `~/.config/omarchy/plugins/*/manifest.json`, and the
@@ -115,7 +115,7 @@ telemetry. Everything it does:
   `https://api.omarchyplugins.com/v1/stats`, with curl pinned to HTTPS
   (`--proto =https --proto-redir =https`), at most 3 redirects and a 64 MB size
   cap. A download is only accepted once it parses as JSON with a `plugins` key.
-- **A cache directory**: `~/.cache/oma-quick-plugin-tui/` (catalog, stats, and
+- **A cache directory**: `~/.cache/fast-plugin-tui-omarchy/` (catalog, stats, and
   the derived TSV/NDJSON files).
 - **A private per-run state directory** under `$XDG_RUNTIME_DIR` (or `/tmp`; `mktemp -d`,
   mode 0700, removed on exit) holding the sort/filter state file and fzf's
@@ -123,8 +123,8 @@ telemetry. Everything it does:
   port — and requires a random per-run API key; the tool uses it for one
   thing, refreshing the header after the highlight timeout.
 - **One `.desktop` file**: while the plugin is enabled, the service writes
-  `~/.local/share/applications/juangalt.oma-quick-plugin-tui.desktop`, tagged
-  with an `X-Oma-Quick-Plugin-TUI-Managed=true` marker, and removes it on
+  `~/.local/share/applications/juangalt.fast-plugin-tui-omarchy.desktop`, tagged
+  with an `X-Fast-Plugin-TUI-Omarchy-Managed=true` marker, and removes it on
   disable/remove. It never replaces a launcher it did not write.
 - **Plugin changes go through `omarchy plugin add/remove/enable/disable/update`**,
   with their normal confirmations (unless you pass `--yes`).
@@ -139,36 +139,36 @@ file is parsed rather than sourced, `alt-o` only opens `http(s)` URLs, and
 ## Options
 
 ```
-oma-quick-plugin-tui [--refresh] [--yes] [--dry-run]
+fast-plugin-tui-omarchy [--refresh] [--yes] [--dry-run]
 ```
 
 `--refresh` re-downloads the catalog and stats before starting (same as
-`ctrl-r`). `--yes` (or `OMA_QUICK_PLUGIN_TUI_YES=1`) skips the `omarchy plugin`
-confirmations. `--dry-run` (or `OMA_QUICK_PLUGIN_TUI_DRY_RUN=1`) prints the
-`omarchy plugin` commands instead of running them. `OMA_QUICK_PLUGIN_TUI_CATALOG_URL` and
-`OMA_QUICK_PLUGIN_TUI_STATS_URL` point the downloads somewhere else (any URL curl
+`ctrl-r`). `--yes` (or `FAST_PLUGIN_TUI_OMARCHY_YES=1`) skips the `omarchy plugin`
+confirmations. `--dry-run` (or `FAST_PLUGIN_TUI_OMARCHY_DRY_RUN=1`) prints the
+`omarchy plugin` commands instead of running them. `FAST_PLUGIN_TUI_OMARCHY_CATALOG_URL` and
+`FAST_PLUGIN_TUI_OMARCHY_STATS_URL` point the downloads somewhere else (any URL curl
 understands, including `file://`) — used by the tests.
 
 ## Development
 
 ```bash
-git clone https://github.com/juangalt/oma-quick-plugin-tui.git
-ln -s "$PWD/oma-quick-plugin-tui" ~/.config/omarchy/plugins/juangalt.oma-quick-plugin-tui
+git clone https://github.com/juangalt/fast-plugin-tui-omarchy.git
+ln -s "$PWD/fast-plugin-tui-omarchy" ~/.config/omarchy/plugins/juangalt.fast-plugin-tui-omarchy
 omarchy-shell shell rescanPlugins
-omarchy plugin enable juangalt.oma-quick-plugin-tui
+omarchy plugin enable juangalt.fast-plugin-tui-omarchy
 ```
 
-Headless checks (after one `bin/oma-quick-plugin-tui --refresh` run to fill the
-cache): `bin/oma-quick-plugin-tui __rows | head`,
-`bin/oma-quick-plugin-tui __preview juangalt.oma-quick-plugin-tui`, and
+Headless checks (after one `bin/fast-plugin-tui-omarchy --refresh` run to fill the
+cache): `bin/fast-plugin-tui-omarchy __rows | head`,
+`bin/fast-plugin-tui-omarchy __preview juangalt.fast-plugin-tui-omarchy`, and
 `omarchy-plugin-validate .` (run it on the real directory, not the symlink).
 
 `tests/keys.sh` exercises every key binding end-to-end: it starts the TUI in
 dry-run mode under a pseudo-terminal (`tests/ptydrive.py`, which answers
 terminal queries the way foot does, so `gum` behaves as in a real terminal),
 presses each key and checks the screen. It uses a private cache seeded from
-`~/.cache/oma-quick-plugin-tui` (so run the TUI once first, or point
-`OPT_TEST_SEED` at a directory holding `catalog.json` and `stats.json`) and
+`~/.cache/fast-plugin-tui-omarchy` (so run the TUI once first, or point
+`FPTO_TEST_SEED` at a directory holding `catalog.json` and `stats.json`) and
 never downloads anything. Run
 `tests/keys.sh` for the whole matrix or `tests/keys.sh ctrl_r help` for a few
 cases; `KEEP=1` keeps the typescripts.

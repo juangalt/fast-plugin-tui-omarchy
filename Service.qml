@@ -2,9 +2,9 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Oma Quick Plugin TUI service: keeps an app-launcher entry installed while the plugin
+// Fast Plugin TUI for Omarchy service: keeps an app-launcher entry installed while the plugin
 // is enabled and removes it when the plugin is disabled or removed. The TUI
-// itself is bin/oma-quick-plugin-tui; nothing else runs inside omarchy-shell.
+// itself is bin/fast-plugin-tui-omarchy; nothing else runs inside omarchy-shell.
 Item {
   id: root
 
@@ -12,12 +12,12 @@ Item {
   property var manifest: null
 
   readonly property string pluginId: manifest && manifest.id
-    ? String(manifest.id) : "juangalt.oma-quick-plugin-tui"
+    ? String(manifest.id) : "juangalt.fast-plugin-tui-omarchy"
   readonly property string homeDir: Quickshell.env("HOME")
   readonly property string dataHome: Quickshell.env("XDG_DATA_HOME") || homeDir + "/.local/share"
   readonly property string desktopPath: dataHome + "/applications/" + pluginId + ".desktop"
   readonly property string shellConfigPath: homeDir + "/.config/omarchy/shell.json"
-  readonly property string marker: "X-Oma-Quick-Plugin-TUI-Managed=true"
+  readonly property string marker: "X-Fast-Plugin-TUI-Omarchy-Managed=true"
 
   // Omarchy 4.0.3 strips __sourceDir from the manifest handed to third-party
   // plugins, so derive the plugin directory from this file's own URL. Works
@@ -26,7 +26,7 @@ Item {
     var dir = localPath(Qt.resolvedUrl("."))
     return dir.charAt(dir.length - 1) === "/" ? dir.slice(0, -1) : dir
   }
-  readonly property string desktopSourcePath: sourceDir + "/assets/oma-quick-plugin-tui.desktop"
+  readonly property string desktopSourcePath: sourceDir + "/assets/fast-plugin-tui-omarchy.desktop"
 
   // bash <script> <source> <target> <plugin-dir> <marker>: substitute
   // @PLUGIN_DIR@ and replace the launcher atomically. Refuses to touch a file
@@ -36,10 +36,10 @@ Item {
     "set -euo pipefail",
     "source_file=$1; target=$2; plugin_dir=$3; marker=$4",
     "if [[ -L \"$target\" || (-e \"$target\" && ! -f \"$target\") ]]; then",
-    "  printf 'Oma Quick Plugin TUI: refusing to replace non-regular launcher: %s\\n' \"$target\" >&2; exit 1",
+    "  printf 'Fast Plugin TUI for Omarchy: refusing to replace non-regular launcher: %s\\n' \"$target\" >&2; exit 1",
     "fi",
     "if [[ -f \"$target\" ]] && ! grep -Fqx -- \"$marker\" \"$target\"; then",
-    "  printf 'Oma Quick Plugin TUI: refusing to replace an unowned launcher: %s\\n' \"$target\" >&2; exit 1",
+    "  printf 'Fast Plugin TUI for Omarchy: refusing to replace an unowned launcher: %s\\n' \"$target\" >&2; exit 1",
     "fi",
     // The template wraps @PLUGIN_DIR@ in double quotes on the Exec= line, so
     // escape the directory for a quoted desktop-entry argument. Two layers
@@ -94,7 +94,7 @@ Item {
   function installLauncher() {
     if (!sourceDir || launcherInstaller.running) return
     launcherInstaller.command = [
-      "bash", "-c", installScript, "oma-quick-plugin-tui-launcher-install",
+      "bash", "-c", installScript, "fast-plugin-tui-omarchy-launcher-install",
       desktopSourcePath, desktopPath, sourceDir, marker
     ]
     launcherInstaller.running = true
@@ -110,7 +110,7 @@ Item {
 
     onExited: function(exitCode) {
       if (exitCode !== 0)
-        console.warn("Oma Quick Plugin TUI: could not install app launcher:",
+        console.warn("Fast Plugin TUI for Omarchy: could not install app launcher:",
           launcherStderr.text.trim())
     }
   }
@@ -119,7 +119,7 @@ Item {
 
   Component.onDestruction: {
     Quickshell.execDetached([
-      "bash", "-c", cleanupScript, "oma-quick-plugin-tui-launcher-cleanup",
+      "bash", "-c", cleanupScript, "fast-plugin-tui-omarchy-launcher-cleanup",
       desktopPath, shellConfigPath, pluginId, marker
     ])
   }

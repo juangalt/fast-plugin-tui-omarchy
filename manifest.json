@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "id": "juangalt.oma-quick-plugin-tui",
-  "name": "Oma Quick Plugin TUI",
+  "id": "juangalt.fast-plugin-tui-omarchy",
+  "name": "Fast Plugin TUI for Omarchy",
   "version": "0.1.0",
   "author": "Juan Galt",
   "license": "MIT",
-  "homepage": "https://github.com/juangalt/oma-quick-plugin-tui",
-  "repository": "https://github.com/juangalt/oma-quick-plugin-tui",
+  "homepage": "https://github.com/juangalt/fast-plugin-tui-omarchy",
+  "repository": "https://github.com/juangalt/fast-plugin-tui-omarchy",
   "keywords": [
     "plugins",
     "marketplace",
