@@ -296,7 +296,7 @@ render_header() {
     "$( (( ONLY_INSTALLED )) && echo on || echo off)" \
     "$( (( ONLY_VERIFIED )) && echo on || echo off)" \
     "$(age_of catalog.json)" "$(age_of stats.json)" "$status"
-  printf 'enter install   ctrl-t enable/disable   ctrl-x remove   ctrl-o update   ctrl-s/alt-s sort   alt-c category   alt-i/alt-v filters   ctrl-r refresh   alt-o repo   alt-h help\n'
+  printf 'enter install  ctrl-t enable/disable  ctrl-x remove  ctrl-o update  ctrl-s sort  alt-c category  alt-i/v filters  ctrl-r refresh  alt-h help\n'
 }
 
 build_rows() {
@@ -324,7 +324,7 @@ build_rows() {
       ov == 1 && $13 != 1 { next }
       {
         mark = ($1 in inst) ? (inst[$1] == "true" ? "●" : "○") : " "
-        disp = sprintf("%s %-30.30s %-14.14s %-10.10s %s%5s %s%4s %s%6s %s%4s",
+        disp = sprintf("%s %-30.30s %-14.14s %-10.10s %s%5s %s%4s %s%6s %s%5s",
           mark, $2, $5, $6, g_star, $7, g_heart, $8, g_views, $9, g_copies, $10)
         print $1, disp, $2, $3, $4
       }' "$CACHE_DIR/installed.tsv" -
