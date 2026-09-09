@@ -76,7 +76,7 @@ Item {
     "if [[ -e \"$config\" ]]; then",
     "  command -v jq >/dev/null 2>&1 || exit 0",
     "  jq -e . \"$config\" >/dev/null 2>&1 || exit 0",
-    "  jq -e --arg id \"$plugin_id\" 'any((.plugins // [])[]; (.id // \"\") == $id)' \"$config\" >/dev/null 2>&1 && exit 0",
+    "  jq -e --arg id \"$plugin_id\" 'any((.plugins // [])[]; (if type == \"object\" then (.id // \"\") else tostring end) == $id)' \"$config\" >/dev/null 2>&1 && exit 0",
     "fi",
     "rm -f -- \"$target\""
   ].join("\n")

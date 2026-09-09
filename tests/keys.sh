@@ -60,6 +60,7 @@ trap cleanup EXIT
 [[ -f $SEED/catalog.json && -f $SEED/stats.json ]] ||
   die "need $SEED/catalog.json and stats.json to seed the test cache (run the TUI once, or set OPT_TEST_SEED)"
 command -v python3 >/dev/null || die "python3 is required"
+command -v ss >/dev/null || die "ss (iproute2) is required for the listener check"
 
 mkdir -p "$WORK/seed" "$WORK/cache" "$WORK/run" "$WORK/bin" "$WORK/cases"
 cp -- "$SEED/catalog.json" "$SEED/stats.json" "$WORK/seed/"

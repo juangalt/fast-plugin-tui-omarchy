@@ -25,8 +25,8 @@ PLUGINS_DIR="$HOME/.config/omarchy/plugins"
 SORTS=(stars hearts views copies added updated name)
 DRY_RUN="${OMA_QUICK_PLUGIN_TUI_DRY_RUN:-0}"
 ASSUME_YES="${OMA_QUICK_PLUGIN_TUI_YES:-0}"
-STATE_FILE="${OPT_STATE:-$CACHE_DIR/state}"
-state_dir="${OPT_STATE_DIR-}"   # per-run private dir (state file, fzf socket); set in main()
+STATE_FILE="${OMA_QUICK_PLUGIN_TUI_STATE:-$CACHE_DIR/state}"
+state_dir="${OMA_QUICK_PLUGIN_TUI_STATE_DIR-}"   # per-run private dir (state file, fzf socket); set in main()
 
 SORT=stars
 CATEGORY=""
@@ -35,6 +35,7 @@ ONLY_VERIFIED=0
 HL_FIELD=""   # header field that just changed (SORT, CATEGORY, ONLY_*) …
 HL_UNTIL=0    # … shown highlighted until this epoch-millisecond deadline
 HL_MS=1200
+HL_ACTIVE=""  # field rendered highlighted by the current render_header call
 
 # Nerd Font glyphs (star, heart, eye, copy) — the same font foot renders.
 G_STAR=$''
@@ -44,6 +45,9 @@ G_COPIES=$''
 
 fail() {
   echo "oma-quick-plugin-tui: $*" >&2
+  # When we spawned our own terminal window, keep it open long enough for the
+  # message to be read (omarchy-show-done is a no-op without a tty).
+  [[ -n ${OMA_QUICK_PLUGIN_TUI_RELAUNCHED-} ]] && omarchy-show-done
   exit 1
 }
 
@@ -81,7 +85,7 @@ usage() {
 Usage: oma-quick-plugin-tui [--refresh] [--yes] [--dry-run] [-h]
 
   --refresh   re-download the catalog and stats before starting
-  --yes       pass --yes to omarchy plugin add/remove/update (skips confirmations)
+  --yes, -y   pass --yes to omarchy plugin add/remove/update (skips confirmations)
   --dry-run   print the omarchy commands instead of running them
 
 Environment: OMA_QUICK_PLUGIN_TUI_YES=1, OMA_QUICK_PLUGIN_TUI_DRY_RUN=1
@@ -172,7 +176,7 @@ flatten_cache() {
   ' "$CACHE_DIR/catalog.json" >"$tmp"
   mv -f -- "$tmp" "$CACHE_DIR/index.ndjson"
 
-  cut -f5 "$CACHE_DIR/rows.tsv" | grep -v '^$' | sort -u >"$CACHE_DIR/categories.txt"
+  cut -f5 "$CACHE_DIR/rows.tsv" | grep -v '^$' | sort -u >"$CACHE_DIR/categories.txt" || true
 }
 
 ensure_cache() {
@@ -196,8 +200,11 @@ ensure_cache() {
   [[ -f $CACHE_DIR/catalog.json ]] ||
     fail "could not download $CATALOG_URL and no cached copy exists"
 
+  # Rebuild the derived files when a download changed, or when this script
+  # itself is newer (a plugin update may have changed the row layout).
   if [[ ! -f $CACHE_DIR/rows.tsv ||
         $CACHE_DIR/rows.tsv -ot $CACHE_DIR/catalog.json ||
+        $CACHE_DIR/rows.tsv -ot $SELF ||
         ( -f $CACHE_DIR/stats.json && $CACHE_DIR/rows.tsv -ot $CACHE_DIR/stats.json ) ]]; then
     flatten_cache
   fi
@@ -208,6 +215,7 @@ ensure_cache() {
 # shell is not running.
 installed_tsv() {
   local tmp m id
+  mkdir -p "$CACHE_DIR"
   tmp=$(mktemp -- "$CACHE_DIR/installed.XXXXXX")
   if ! omarchy-plugin-list --json 2>/dev/null |
     jq -r --arg re "$ID_RE" '.[] | select((.id | type) == "string" and (.id | test($re)))
@@ -274,7 +282,7 @@ save_state() {
 
 # Print the fzf action string that re-reads rows and header after a state change.
 refresh_actions() {
-  echo 'reload("$OPT_SELF" __rows)+transform-header("$OPT_SELF" __header)'
+  echo 'reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)+transform-header("$OMA_QUICK_PLUGIN_TUI_SELF" __header)'
 }
 
 now_ms() { date +%s%3N; }
@@ -303,7 +311,7 @@ schedule_unhighlight() {
 # change-header:<text> (colon form, because the text contains parentheses).
 # Requests carry the per-run FZF_API_KEY that main() generated.
 unhighlight() {
-  sleep 1.3
+  sleep "$(awk -v ms="$HL_MS" 'BEGIN { printf "%.2f", ms / 1000 + 0.1 }')"
   local header
   header=$(render_header)
   [[ -n ${FZF_SOCK-} && -n ${FZF_API_KEY-} ]] || return 0
@@ -316,6 +324,7 @@ cycle() {
   local current="$1" direction="$2"; shift 2
   local -a values=("$@")
   local i n=${#values[@]}
+  (( n )) || { printf '%s\n' "$current"; return 0; }
   for (( i = 0; i < n; i++ )); do
     [[ ${values[i]} == "$current" ]] && break
   done
@@ -343,7 +352,7 @@ set_state() {
     ;;
   CATEGORY)
     local -a cats=("")
-    mapfile -t -O 1 cats <"$CACHE_DIR/categories.txt"
+    [[ -f $CACHE_DIR/categories.txt ]] && mapfile -t -O 1 cats <"$CACHE_DIR/categories.txt"
     case $value in
     next | prev) CATEGORY=$(cycle "$CATEGORY" "$value" "${cats[@]}") ;;
     All | all) CATEGORY="" ;;
@@ -377,12 +386,12 @@ pick_state() {
   CATEGORY)
     choice=$({ echo All; cat "$CACHE_DIR/categories.txt"; } |
       gum choose --header="Filter by category" --selected="${CATEGORY:-All}") || return 0
-    [[ -n $choice ]] && set_state CATEGORY "$choice"
+    [[ -n $choice ]] && set_state CATEGORY "$choice" || true
     ;;
   SORT)
     choice=$(printf '%s\n' "${SORTS[@]}" |
       gum choose --header="Sort by" --selected="$SORT") || return 0
-    [[ -n $choice ]] && set_state SORT "$choice"
+    [[ -n $choice ]] && set_state SORT "$choice" || true
     ;;
   esac
 }
@@ -390,13 +399,13 @@ pick_state() {
 # ---------------------------------------------------------------- rows ---
 
 age_of() {
-  local file="$CACHE_DIR/$1" secs
-  [[ -f $file ]] || { echo "none"; return; }
-  secs=$(( $(date +%s) - $(stat -c %Y "$file") ))
-  if (( secs < 60 )); then echo "${secs}s"
-  elif (( secs < 3600 )); then echo "$(( secs / 60 ))m"
-  elif (( secs < 86400 )); then echo "$(( secs / 3600 ))h"
-  else echo "$(( secs / 86400 ))d"
+  local file="$CACHE_DIR/$1" secs mtime
+  mtime=$(stat -c %Y "$file" 2>/dev/null) || { echo "n/a"; return 0; }
+  secs=$(( $(date +%s) - mtime ))
+  if (( secs < 60 )); then echo "${secs}s ago"
+  elif (( secs < 3600 )); then echo "$(( secs / 60 ))m ago"
+  elif (( secs < 86400 )); then echo "$(( secs / 3600 ))h ago"
+  else echo "$(( secs / 86400 ))d ago"
   fi
 }
 
@@ -419,7 +428,7 @@ render_header() {
   if [[ -n $HL_FIELD && $HL_UNTIL =~ ^[0-9]+$ ]] && (( $(now_ms) < HL_UNTIL )); then
     HL_ACTIVE=$HL_FIELD
   fi
-  printf 'sort:%s▾   category:%s   installed-only:%s   verified-only:%s   catalog: %s ago (stats %s)%s\n' \
+  printf 'sort:%s▾   category:%s   installed-only:%s   verified-only:%s   catalog: %s (stats %s)%s\n' \
     "$(hl_field SORT "$SORT")" \
     "$(hl_field CATEGORY "${CATEGORY:-all}")" \
     "$(hl_field ONLY_INSTALLED "$( (( ONLY_INSTALLED )) && echo on || echo off)")" \
@@ -443,10 +452,13 @@ build_rows() {
   *)       sk=(-k7,7nr -k2,2f) ;;
   esac
 
+  # The category goes in through the environment: awk -v would interpret
+  # backslash escapes in it.
   LC_ALL=C.UTF-8 sort -t $'\t' "${sk[@]}" "$CACHE_DIR/rows.tsv" |
-    LC_ALL=C.UTF-8 awk -F '\t' -v OFS='\t' \
-      -v cat="$CATEGORY" -v oi="$ONLY_INSTALLED" -v ov="$ONLY_VERIFIED" \
+    LC_ALL=C.UTF-8 OQPT_CATEGORY="$CATEGORY" awk -F '\t' -v OFS='\t' \
+      -v oi="$ONLY_INSTALLED" -v ov="$ONLY_VERIFIED" \
       -v g_star="$G_STAR" -v g_heart="$G_HEART" -v g_views="$G_VIEWS" -v g_copies="$G_COPIES" '
+      BEGIN { cat = ENVIRON["OQPT_CATEGORY"] }
       FILENAME == ARGV[1] { inst[$1] = $2; next }
       cat != "" && $5 != cat { next }
       oi == 1 && !($1 in inst) { next }
@@ -455,7 +467,11 @@ build_rows() {
         mark = ($1 in inst) ? (inst[$1] == "true" ? "●" : "○") : " "
         disp = sprintf("%s %-30.30s %-14.14s %-10.10s %s%5s %s%4s %s%6s %s%5s",
           mark, $2, $5, $6, g_star, $7, g_heart, $8, g_views, $9, g_copies, $10)
-        print $1, disp, $2, $3, $4
+        # fzf can only search what it displays, so author, tags and id ride
+        # along dimmed at the end of the row (clipped on narrow windows, but
+        # still matched).
+        disp = disp sprintf("  \033[2m%s · %s · %s\033[0m", $3, $4, $1)
+        print $1, disp
       }' "$CACHE_DIR/installed.tsv" -
 }
 
@@ -672,17 +688,17 @@ fzf_main() {
   printf '\e]2;%s\a' "$title"
   local -a fzf_args=(
     --multi
+    --ansi
+    --no-hscroll
     --delimiter $'\t'
     --with-nth 2
-    --nth 1..5
-    --accept-nth 1
     --tiebreak index
     --header "$(render_header)"
     --prompt 'plugins> '
     --border top
     --border-label " $title "
     --border-label-pos 2
-    --preview '"$OPT_SELF" __preview {1}'
+    --preview '"$OMA_QUICK_PLUGIN_TUI_SELF" __preview {1}'
     --preview-window 'down:65%:wrap'
     --preview-label 'alt-p: toggle preview, alt-j/k: scroll, tab: multi-select, ?: help'
     --preview-label-pos 'bottom'
@@ -702,21 +718,21 @@ fzf_main() {
     --bind 'alt-p:toggle-preview'
     --bind 'alt-d:preview-half-page-down,alt-u:preview-half-page-up'
     --bind 'alt-k:preview-up,alt-j:preview-down'
-    --bind 'alt-s:transform("$OPT_SELF" __set SORT next)'
-    --bind 'alt-S:execute("$OPT_SELF" __pick SORT)+transform("$OPT_SELF" __refresh)'
-    --bind 'alt-c:transform("$OPT_SELF" __set CATEGORY next)'
-    --bind 'alt-C:execute("$OPT_SELF" __pick CATEGORY)+transform("$OPT_SELF" __refresh)'
-    --bind 'alt-i:transform("$OPT_SELF" __toggle ONLY_INSTALLED)'
-    --bind 'alt-v:transform("$OPT_SELF" __toggle ONLY_VERIFIED)'
-    --bind 'alt-o:execute-silent("$OPT_SELF" __open {1})'
-    --bind 'alt-h:execute("$OPT_SELF" __help)+transform-header("$OPT_SELF" __header)'
-    --bind '?:execute("$OPT_SELF" __help)+transform-header("$OPT_SELF" __header)'
+    --bind 'alt-s:transform("$OMA_QUICK_PLUGIN_TUI_SELF" __set SORT next)'
+    --bind 'alt-S:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __pick SORT)+transform("$OMA_QUICK_PLUGIN_TUI_SELF" __refresh)'
+    --bind 'alt-c:transform("$OMA_QUICK_PLUGIN_TUI_SELF" __set CATEGORY next)'
+    --bind 'alt-C:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __pick CATEGORY)+transform("$OMA_QUICK_PLUGIN_TUI_SELF" __refresh)'
+    --bind 'alt-i:transform("$OMA_QUICK_PLUGIN_TUI_SELF" __toggle ONLY_INSTALLED)'
+    --bind 'alt-v:transform("$OMA_QUICK_PLUGIN_TUI_SELF" __toggle ONLY_VERIFIED)'
+    --bind 'alt-o:execute-silent("$OMA_QUICK_PLUGIN_TUI_SELF" __open {1})'
+    --bind 'alt-h:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __help)+transform-header("$OMA_QUICK_PLUGIN_TUI_SELF" __header)'
+    --bind '?:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __help)+transform-header("$OMA_QUICK_PLUGIN_TUI_SELF" __header)'
     # actions: ctrl (and enter)
-    --bind 'ctrl-r:execute("$OPT_SELF" __refresh-cache)+transform("$OPT_SELF" __refresh)'
-    --bind 'enter:execute("$OPT_SELF" __install {+1})+deselect-all+reload("$OPT_SELF" __rows)'
-    --bind 'ctrl-x:execute("$OPT_SELF" __remove {+1})+deselect-all+reload("$OPT_SELF" __rows)'
-    --bind 'ctrl-t:execute("$OPT_SELF" __toggle-enable {+1})+deselect-all+reload("$OPT_SELF" __rows)'
-    --bind 'ctrl-o:execute("$OPT_SELF" __update {+1})+deselect-all+reload("$OPT_SELF" __rows)'
+    --bind 'ctrl-r:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __refresh-cache)+transform("$OMA_QUICK_PLUGIN_TUI_SELF" __refresh)'
+    --bind 'enter:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __install {+1})+deselect-all+reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)'
+    --bind 'ctrl-x:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __remove {+1})+deselect-all+reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)'
+    --bind 'ctrl-t:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __toggle-enable {+1})+deselect-all+reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)'
+    --bind 'ctrl-o:execute("$OMA_QUICK_PLUGIN_TUI_SELF" __update {+1})+deselect-all+reload("$OMA_QUICK_PLUGIN_TUI_SELF" __rows)'
     --color 'pointer:green,marker:green'
   )
   build_rows | SHELL=/bin/bash fzf "${fzf_args[@]}" >/dev/null || true
@@ -724,6 +740,7 @@ fzf_main() {
 
 main() {
   local force=""
+  local -a argv=("$@")
   while (( $# > 0 )); do
     case "$1" in
     --refresh) force=--force ;;
@@ -735,14 +752,18 @@ main() {
     shift
   done
 
-  # Launched from a .desktop entry or app launcher without a terminal.
+  # Launched from a .desktop entry or app launcher without a terminal: open
+  # one and run there. TUI.float is the app-id Omarchy's own TUI launchers
+  # use — Hyprland floats and centres it at 875x600 (default/hypr/apps/system.lua).
   if [[ ! -t 0 || ! -t 1 ]]; then
-    # TUI.float is the app-id Omarchy's own TUI launchers use: Hyprland floats
-    # and centres it at 875x600 (default/hypr/apps/system.lua).
+    [[ -z ${OMA_QUICK_PLUGIN_TUI_RELAUNCHED-} ]] ||
+      fail "no terminal available (relaunch did not get a tty)"
+    command -v xdg-terminal-exec >/dev/null || fail "xdg-terminal-exec is required to open a terminal"
+    export OMA_QUICK_PLUGIN_TUI_RELAUNCHED=1
     if command -v omarchy-launch-tui >/dev/null; then
-      exec omarchy-launch-tui --app-id=TUI.float "$SELF" "$@"
+      exec omarchy-launch-tui --app-id=TUI.float "$SELF" "${argv[@]}"
     fi
-    exec xdg-terminal-exec --app-id=TUI.float -e "$SELF" "$@"
+    exec xdg-terminal-exec --app-id=TUI.float -e "$SELF" "${argv[@]}"
   fi
 
   local dep
@@ -756,12 +777,12 @@ main() {
   # Private (0700) per-run state dir: the state file and fzf's unix socket.
   state_dir=$(mktemp -d -- "${XDG_RUNTIME_DIR:-/tmp}/oma-quick-plugin-tui.XXXXXX")
   trap 'rm -rf -- "$state_dir"' EXIT
-  export OPT_SELF="$SELF" OPT_STATE="$state_dir/state" OPT_STATE_DIR="$state_dir"
+  export OMA_QUICK_PLUGIN_TUI_SELF="$SELF" OMA_QUICK_PLUGIN_TUI_STATE="$state_dir/state" OMA_QUICK_PLUGIN_TUI_STATE_DIR="$state_dir"
   export OMA_QUICK_PLUGIN_TUI_DRY_RUN="$DRY_RUN" OMA_QUICK_PLUGIN_TUI_YES="$ASSUME_YES"
   # fzf's --listen server requires this key on every request.
   FZF_API_KEY=$(head -c 32 /dev/urandom | base64)
   export FZF_API_KEY
-  STATE_FILE="$OPT_STATE"
+  STATE_FILE="$OMA_QUICK_PLUGIN_TUI_STATE"
   save_state
 
   fzf_main

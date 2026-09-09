@@ -5,8 +5,19 @@
   "version": "0.1.0",
   "author": "Juan Galt",
   "license": "MIT",
+  "homepage": "https://github.com/juangalt/oma-quick-plugin-tui",
+  "repository": "https://github.com/juangalt/oma-quick-plugin-tui",
+  "keywords": [
+    "plugins",
+    "marketplace",
+    "tui",
+    "fzf",
+    "launcher"
+  ],
   "description": "Browse, search, sort and install Omarchy marketplace plugins from a fzf TUI",
-  "kinds": ["service"],
+  "kinds": [
+    "service"
+  ],
   "entryPoints": {
     "service": "Service.qml"
   }
