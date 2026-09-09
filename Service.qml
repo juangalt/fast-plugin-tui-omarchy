@@ -28,41 +28,55 @@ Item {
   }
   readonly property string desktopSourcePath: sourceDir + "/assets/oma-quick-plugin-tui.desktop"
 
-  // bash <script> <source> <target> <plugin-dir>: substitute @PLUGIN_DIR@ and
-  // replace the launcher atomically. Refuses to touch a file we did not write.
+  // bash <script> <source> <target> <plugin-dir> <marker>: substitute
+  // @PLUGIN_DIR@ and replace the launcher atomically. Refuses to touch a file
+  // we did not write. Everything variable arrives as argv, never spliced into
+  // the script text.
   readonly property string installScript: [
     "set -euo pipefail",
-    "source_file=$1; target=$2; plugin_dir=$3",
+    "source_file=$1; target=$2; plugin_dir=$3; marker=$4",
     "if [[ -L \"$target\" || (-e \"$target\" && ! -f \"$target\") ]]; then",
     "  printf 'Oma Quick Plugin TUI: refusing to replace non-regular launcher: %s\\n' \"$target\" >&2; exit 1",
     "fi",
-    "if [[ -f \"$target\" ]] && ! grep -Fqx -- '" + marker + "' \"$target\"; then",
+    "if [[ -f \"$target\" ]] && ! grep -Fqx -- \"$marker\" \"$target\"; then",
     "  printf 'Oma Quick Plugin TUI: refusing to replace an unowned launcher: %s\\n' \"$target\" >&2; exit 1",
     "fi",
+    // The template wraps @PLUGIN_DIR@ in double quotes on the Exec= line, so
+    // escape the directory for a quoted desktop-entry argument. Two layers
+    // apply: the entry's string escaping (\\ -> \) runs before the Exec
+    // quoting rule, so a literal backslash, double quote, backtick or dollar
+    // needs "\\" in front of it in the file (the spec's own "\\\\" example),
+    // and a lone % introduces a field code, so it becomes %%.
+    "esc=${plugin_dir//\\\\/\\\\\\\\\\\\\\\\}",
+    "esc=${esc//\\\"/\\\\\\\\\\\"}",
+    "esc=${esc//\\`/\\\\\\\\\\`}",
+    "esc=${esc//\\$/\\\\\\\\\\$}",
+    "esc=${esc//%/%%}",
     "mkdir -p -- \"$(dirname -- \"$target\")\"",
     "tmp=$(mktemp -- \"${target}.tmp.XXXXXX\")",
     "trap 'rm -f -- \"$tmp\"' EXIT",
     "while IFS= read -r line || [[ -n $line ]]; do",
-    "  printf '%s\\n' \"${line//@PLUGIN_DIR@/$plugin_dir}\"",
+    "  printf '%s\\n' \"${line//@PLUGIN_DIR@/\"$esc\"}\"",
     "done <\"$source_file\" >\"$tmp\"",
     "chmod 0644 -- \"$tmp\"",
     "mv -f -- \"$tmp\" \"$target\"",
     "trap - EXIT"
   ].join("\n")
 
-  // bash <script> <target> <shell.json>: remove the launcher unless the plugin
-  // is still enabled (a third-party plugin is enabled iff its id is listed in
-  // shell.json plugins[]), so a plugin reload keeps it and disable/remove drops it.
+  // bash <script> <target> <shell.json> <plugin-id> <marker>: remove the
+  // launcher unless the plugin is still enabled (a third-party plugin is
+  // enabled iff its id is listed in shell.json plugins[]), so a plugin reload
+  // keeps it and disable/remove drops it.
   readonly property string cleanupScript: [
     "set -euo pipefail",
-    "target=$1; config=$2",
+    "target=$1; config=$2; plugin_id=$3; marker=$4",
     "sleep 0.1",
     "[[ -f \"$target\" && ! -L \"$target\" ]] || exit 0",
-    "grep -Fqx -- '" + marker + "' \"$target\" || exit 0",
+    "grep -Fqx -- \"$marker\" \"$target\" || exit 0",
     "if [[ -e \"$config\" ]]; then",
     "  command -v jq >/dev/null 2>&1 || exit 0",
     "  jq -e . \"$config\" >/dev/null 2>&1 || exit 0",
-    "  jq -e --arg id '" + pluginId + "' 'any((.plugins // [])[]; (.id // \"\") == $id)' \"$config\" >/dev/null 2>&1 && exit 0",
+    "  jq -e --arg id \"$plugin_id\" 'any((.plugins // [])[]; (.id // \"\") == $id)' \"$config\" >/dev/null 2>&1 && exit 0",
     "fi",
     "rm -f -- \"$target\""
   ].join("\n")
@@ -81,7 +95,7 @@ Item {
     if (!sourceDir || launcherInstaller.running) return
     launcherInstaller.command = [
       "bash", "-c", installScript, "oma-quick-plugin-tui-launcher-install",
-      desktopSourcePath, desktopPath, sourceDir
+      desktopSourcePath, desktopPath, sourceDir, marker
     ]
     launcherInstaller.running = true
   }
@@ -106,7 +120,7 @@ Item {
   Component.onDestruction: {
     Quickshell.execDetached([
       "bash", "-c", cleanupScript, "oma-quick-plugin-tui-launcher-cleanup",
-      desktopPath, shellConfigPath
+      desktopPath, shellConfigPath, pluginId, marker
     ])
   }
 }

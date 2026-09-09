@@ -407,7 +407,46 @@ STEPS
   verdict home_end "home → pointer on the top row (last item, $LAST_ID); end → bottom row (item #1, $FIRST_ID); ctrl-t on each confirms the id"
 }
 
-ALL=(esc ctrl_q ignored alt_s alt_c alt_i_v alt_S alt_C alt_p alt_scroll help alt_o enter ctrl_t ctrl_x ctrl_o ctrl_r home_end)
+# fzf's action endpoint: a unix socket inside the private state dir, API-key
+# protected, no TCP listener. A helper waits for the socket while the TUI is
+# up and probes it; the header must not pick up the unauthenticated request.
+case_listen() {
+  local out="$WORK/listen.txt"
+  rm -f "$out"
+  (
+    sock="" fzf_pid=""
+    for _ in $(seq 1 100); do
+      sock=$(find "$WORK/run" -name fzf.sock 2>/dev/null | head -n1)
+      [[ -n $sock ]] && break
+      sleep 0.1
+    done
+    for p in $(test_pids); do
+      [[ $(cat "/proc/$p/comm" 2>/dev/null) == fzf ]] && fzf_pid=$p
+    done
+    printf 'sock=%s fzf_pid=%s ' "${sock#"$WORK"/}" "$fzf_pid"
+    printf 'nokey=%s ' "$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$sock" -XPOST http://localhost/ --data-binary 'change-header:pwned')"
+    printf 'badkey=%s ' "$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$sock" -H 'x-api-key: wrong' -XPOST http://localhost/ --data-binary 'change-header:pwned')"
+    printf 'tcp=%s\n' "$(ss -ltnp 2>/dev/null | grep -c "pid=${fzf_pid:-none},")"
+  ) >"$out" 2>&1 &
+  run_case listen <<STEPS
+$MAIN
+sleep 3
+nowaitscreen 1 pwned
+waitscreen 2 $HEADER
+send \\x1b
+exit 5
+STEPS
+  wait
+  local extra="" probe
+  probe=$(cat "$out" 2>/dev/null)
+  [[ $probe == *"sock=run/oma-quick-plugin-tui."*"/fzf.sock "* ]] || extra+=" no-unix-socket"
+  [[ $probe == *" nokey=401 "* ]] || extra+=" no-key-not-401"
+  [[ $probe == *" badkey=401 "* ]] || extra+=" bad-key-not-401"
+  [[ $probe == *" tcp=0" ]] || extra+=" tcp-listener"
+  verdict listen "fzf listens on a unix socket in the private state dir; POST without / with a wrong x-api-key → 401 and the header is untouched; no TCP port ($probe)" "${extra# }"
+}
+
+ALL=(esc ctrl_q ignored alt_s alt_c alt_i_v alt_S alt_C alt_p alt_scroll help alt_o enter ctrl_t ctrl_x ctrl_o ctrl_r home_end listen)
 
 # ------------------------------------------------------------------- main ---
 

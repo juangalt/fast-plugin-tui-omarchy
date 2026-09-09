@@ -26,6 +26,7 @@ SORTS=(stars hearts views copies added updated name)
 DRY_RUN="${OMA_QUICK_PLUGIN_TUI_DRY_RUN:-0}"
 ASSUME_YES="${OMA_QUICK_PLUGIN_TUI_YES:-0}"
 STATE_FILE="${OPT_STATE:-$CACHE_DIR/state}"
+state_dir="${OPT_STATE_DIR-}"   # per-run private dir (state file, fzf socket); set in main()
 
 SORT=stars
 CATEGORY=""
@@ -45,6 +46,14 @@ fail() {
   echo "oma-quick-plugin-tui: $*" >&2
   exit 1
 }
+
+# Catalog data is untrusted: ids are only accepted in this shape (they are
+# used as awk needles and as omarchy plugin arguments), and any string that
+# reaches the terminal is stripped of control characters first so a crafted
+# entry cannot inject escape sequences into the preview or the action output.
+ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+valid_id() { [[ $1 =~ $ID_RE && $1 != *..* ]]; }
+sanitize() { printf '%s' "${1//[[:cntrl:]]/}"; }
 
 # "Oma Quick Plugin TUI - v0.1": major.minor from the manifest next to the script.
 title() {
@@ -96,7 +105,13 @@ cache_fresh() {
 fetch() {
   local url="$1" dest="$2" title="$3" tmp ok=1
   tmp=$(mktemp -- "$dest.XXXXXX")
-  local -a curl_cmd=(curl -fsSL --connect-timeout 10 --max-time 120 -o "$tmp" "$url")
+  local -a curl_cmd=(curl -fsSL --connect-timeout 10 --max-time 120
+    --max-redirs 3 --max-filesize 67108864 -o "$tmp" "$url")
+  # Pin https downloads to https, redirects included (file:// stays usable
+  # for the tests).
+  if [[ $url == https://* ]]; then
+    curl_cmd+=(--proto '=https' --proto-redir '=https')
+  fi
   if [[ -t 1 ]] && : 2>/dev/null <>/dev/tty && command -v gum >/dev/null; then
     gum spin --title "$title" -- "${curl_cmd[@]}" 2>/dev/tty || ok=0
   else
@@ -121,20 +136,26 @@ flatten_cache() {
   local stats="$CACHE_DIR/stats.json" tmp
   [[ -f $stats ]] || stats=/dev/null
 
+  # Entries whose id is not a plain token are dropped from both files, and
+  # every string is stripped of C0/C1 control characters (\x{..} form: the
+  # plain \x7f-\x9f range does not reach C1 code points in jq's regex engine).
+  local id_select='select((.id|type)=="string" and (.id|test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and ((.id|contains(".."))|not))'
   tmp=$(mktemp -- "$CACHE_DIR/rows.XXXXXX")
   jq -r --slurpfile st "$stats" '
-    def clean: (. // "") | tostring | gsub("[\t\n\r]"; " ");
+    def clean: (. // "") | tostring | gsub("[\\x{00}-\\x{1f}\\x{7f}-\\x{9f}]"; " ");
     ($st[0].plugins // {}) as $s
     | .plugins[]
+    | '"$id_select"'
     | . as $p | ($s[$p.id] // {}) as $m
     | [ ($p.id | clean), ($p.name | clean), ($p.author | clean),
         (($p.tags // []) | join(",") | clean),
         ($p.category | clean), ($p.kind | clean),
-        ($p.stars // 0), ($m.hearts // 0), ($m.views // 0), ($m.copies // 0),
-        ($p.addedAt // "0000-00-00"), ($p.repositoryUpdatedAt // ""),
+        ($p.stars // 0 | tonumber? // 0), ($m.hearts? // 0 | tonumber? // 0),
+        ($m.views? // 0 | tonumber? // 0), ($m.copies? // 0 | tonumber? // 0),
+        (($p.addedAt // "0000-00-00") | clean), ($p.repositoryUpdatedAt | clean),
         (if $p.verificationStatus == "verified" then 1 else 0 end),
         (if $p.installAvailable == true then 1 else 0 end),
-        ($p.repo | clean), ($p.sourceType // "community")
+        ($p.repo | clean), (($p.sourceType // "community") | clean)
       ] | @tsv
   ' "$CACHE_DIR/catalog.json" >"$tmp"
   mv -f -- "$tmp" "$CACHE_DIR/rows.tsv"
@@ -143,6 +164,7 @@ flatten_cache() {
   jq -c --slurpfile st "$stats" '
     ($st[0].plugins // {}) as $s
     | .plugins[]
+    | '"$id_select"'
     | {id} + . + {stats: ($s[.id] // {})}
     | del(.previewImage, .previewThumbnail, .previewWidth, .previewHeight,
           .previewThumbnailWidth, .previewThumbnailHeight,
@@ -185,15 +207,18 @@ ensure_cache() {
 # (covers first-party builtins too); falls back to a directory scan if the
 # shell is not running.
 installed_tsv() {
-  local tmp m
+  local tmp m id
   tmp=$(mktemp -- "$CACHE_DIR/installed.XXXXXX")
   if ! omarchy-plugin-list --json 2>/dev/null |
-    jq -r '.[] | [.id, (.enabled | tostring)] | @tsv' >"$tmp" 2>/dev/null || [[ ! -s $tmp ]]; then
+    jq -r --arg re "$ID_RE" '.[] | select((.id | type) == "string" and (.id | test($re)))
+      | [.id, (.enabled | tostring)] | @tsv' >"$tmp" 2>/dev/null || [[ ! -s $tmp ]]; then
     : >"$tmp"
     for m in "$PLUGINS_DIR"/*/manifest.json; do
       [[ -f $m ]] || continue
-      printf '%s\t?\n' "$(jq -r '.id // empty' "$m" 2>/dev/null)"
-    done | grep -v '^	' >"$tmp" || true
+      id=$(jq -r '.id // empty' "$m" 2>/dev/null) || continue
+      valid_id "$id" || continue
+      printf '%s\t?\n' "$id"
+    done >"$tmp" || true
   fi
   mv -f -- "$tmp" "$CACHE_DIR/installed.tsv"
 }
@@ -202,16 +227,39 @@ installed_state() {
   awk -F '\t' -v id="$1" '$1 == id { print $2; exit }' "$CACHE_DIR/installed.tsv" 2>/dev/null || true
 }
 
+# The index line whose record starts with {"id":"<id>", — anchored at column
+# 1, so a crafted record embedding another plugin's id further along the line
+# cannot shadow the real one. Prints nothing for an unknown id; fails for an
+# id that is not even well-formed.
 record_for() {
-  grep -m1 -F "{\"id\":\"$1\"," "$CACHE_DIR/index.ndjson" 2>/dev/null ||
-    jq -c --arg id "$1" 'select(.id == $id)' "$CACHE_DIR/index.ndjson" 2>/dev/null | head -n1
+  valid_id "$1" || return 1
+  awk -v p="{\"id\":\"$1\"," 'index($0, p) == 1 { print; exit }' "$CACHE_DIR/index.ndjson" 2>/dev/null || return 1
 }
 
 # ---------------------------------------------------------------- state ---
 
+# The state file is plain KEY=value lines (one per key, no quoting). It is
+# parsed, never sourced: only the six known keys are read and each value has
+# to be well-formed, so a stray file in the state dir cannot run code.
 load_state() {
-  # shellcheck source=/dev/null
-  [[ -f $STATE_FILE ]] && source "$STATE_FILE"
+  [[ -f $STATE_FILE ]] || return 0
+  local line key value
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ ^(SORT|CATEGORY|ONLY_INSTALLED|ONLY_VERIFIED|HL_FIELD|HL_UNTIL)=(.*)$ ]] || continue
+    key=${BASH_REMATCH[1]} value=${BASH_REMATCH[2]}
+    case $key in
+    SORT)
+      if [[ " ${SORTS[*]} " == *" $value "* ]]; then SORT=$value; fi ;;
+    CATEGORY)
+      CATEGORY=$(sanitize "$value") ;;   # a category name from the catalog, or empty for "all"
+    ONLY_INSTALLED | ONLY_VERIFIED)
+      if [[ $value == [01] ]]; then printf -v "$key" '%s' "$value"; fi ;;
+    HL_FIELD)
+      if [[ $value =~ ^(SORT|CATEGORY|ONLY_INSTALLED|ONLY_VERIFIED)?$ ]]; then HL_FIELD=$value; fi ;;
+    HL_UNTIL)
+      if [[ $value =~ ^[0-9]+$ ]]; then HL_UNTIL=$value; fi ;;
+    esac
+  done <"$STATE_FILE"
   return 0
 }
 
@@ -219,7 +267,7 @@ save_state() {
   local tmp
   mkdir -p "$(dirname -- "$STATE_FILE")"
   tmp=$(mktemp -- "$STATE_FILE.XXXXXX")
-  printf 'SORT=%q\nCATEGORY=%q\nONLY_INSTALLED=%q\nONLY_VERIFIED=%q\nHL_FIELD=%q\nHL_UNTIL=%q\n' \
+  printf 'SORT=%s\nCATEGORY=%s\nONLY_INSTALLED=%s\nONLY_VERIFIED=%s\nHL_FIELD=%s\nHL_UNTIL=%s\n' \
     "$SORT" "$CATEGORY" "$ONLY_INSTALLED" "$ONLY_VERIFIED" "$HL_FIELD" "$HL_UNTIL" >"$tmp"
   mv -f -- "$tmp" "$STATE_FILE"
 }
@@ -238,12 +286,13 @@ mark_changed() {
   HL_UNTIL=$(( $(now_ms) + HL_MS ))
 }
 
-# fzf runs with --listen and exports the port as FZF_PORT to its children.
-# Fork a fully detached sleeper (own session, no fds shared with fzf, so the
-# transform that called us returns immediately) that pushes a fresh header
-# once the deadline has passed. Headless callers have no FZF_PORT: skip.
+# fzf runs with --listen on a unix socket inside the private state dir and
+# exports its path as FZF_SOCK to its children. Fork a fully detached sleeper
+# (own session, no fds shared with fzf, so the transform that called us
+# returns immediately) that pushes a fresh header once the deadline has
+# passed. Headless callers have no FZF_SOCK: skip.
 schedule_unhighlight() {
-  [[ -n ${FZF_PORT-} ]] || return 0
+  [[ -n ${FZF_SOCK-} ]] || return 0
   setsid -f "$SELF" __unhighlight </dev/null >/dev/null 2>&1 || true
 }
 
@@ -252,12 +301,14 @@ schedule_unhighlight() {
 # highlighted and the later sleeper clears it. The safe --listen server only
 # accepts plain-text actions, hence the header is computed here and sent as
 # change-header:<text> (colon form, because the text contains parentheses).
+# Requests carry the per-run FZF_API_KEY that main() generated.
 unhighlight() {
   sleep 1.3
   local header
   header=$(render_header)
-  curl -s -m 3 -o /dev/null -XPOST "localhost:$FZF_PORT" \
-    --data-binary "change-header:$header" || true
+  [[ -n ${FZF_SOCK-} && -n ${FZF_API_KEY-} ]] || return 0
+  curl -s -m 3 -o /dev/null --unix-socket "$FZF_SOCK" -H "x-api-key: $FZF_API_KEY" \
+    -XPOST http://localhost/ --data-binary "change-header:$header" || true
 }
 
 cycle() {
@@ -410,17 +461,22 @@ build_rows() {
 
 # ---------------------------------------------------------------- preview ---
 
+# Every catalog string goes through clean (control characters → space) before
+# it is printed, and every number through tonumber, so the record cannot
+# smuggle escape sequences into the preview pane.
 render_preview() {
   local id="$1" rec inst cols="${FZF_PREVIEW_COLUMNS:-80}"
-  rec=$(record_for "$id")
-  [[ -n $rec ]] || { echo "No catalog record for $id"; return 0; }
+  rec=$(record_for "$id") || rec=""
+  [[ -n $rec ]] || { echo "No catalog record for $(sanitize "$id")"; return 0; }
   inst=$(installed_state "$id")
 
   jq -r --arg inst "$inst" '
+    def clean: (. // "") | tostring | gsub("[\\x{00}-\\x{1f}\\x{7f}-\\x{9f}]"; " ");
     def pad($n): . + (" " * ([$n - length, 0] | max));
-    def row($k; $v): "[1m\($k | pad(10))[0m " + (($v // "-") | tostring);
-    def n($x): ($x // 0) | tostring;
-    "[1;32m\(.name)[0m  [2m\(.id)[0m",
+    def row($k; $v): "[1m\($k | pad(10))[0m " + (($v // "-") | clean);
+    def rawrow($k; $v): "[1m\($k | pad(10))[0m " + $v;   # $v built here from cleaned parts only
+    def n(x): ((x // 0) | tonumber? // 0) | tostring;
+    "[1;32m\(.name | clean)[0m  [2m\(.id | clean)[0m",
     (if $inst == "true" then "[32m● enabled[0m"
      elif $inst == "false" then "[33m○ installed (disabled)[0m"
      elif $inst == "?" then "[33m○ installed[0m"
@@ -430,21 +486,21 @@ render_preview() {
     row("Version"; .version),
     row("Category"; .category),
     row("Kind"; .kind),
-    row("Tags"; ((.tags // []) | join(", "))),
-    row("Stats"; "[33m'"$G_STAR"'[0m \(n(.stars))   [31m'"$G_HEART"'[0m \(n(.stats.hearts))   '"$G_VIEWS"' \(n(.stats.views))   '"$G_COPIES"' \(n(.stats.copies))"),
-    row("Verified"; (.verificationStatus // (if .sourceType == "builtin" then "built-in" else "unknown" end))
-                    + (if .verificationMethod then " (\(.verificationMethod))" else "" end)),
+    row("Tags"; ((.tags // []) | if type == "array" then map(clean) | join(", ") else clean end)),
+    rawrow("Stats"; "[33m'"$G_STAR"'[0m \(n(.stars))   [31m'"$G_HEART"'[0m \(n(.stats.hearts?))   '"$G_VIEWS"' \(n(.stats.views?))   '"$G_COPIES"' \(n(.stats.copies?))"),
+    row("Verified"; ((.verificationStatus // (if .sourceType == "builtin" then "built-in" else "unknown" end)) | clean)
+                    + (if .verificationMethod then " (\(.verificationMethod | clean))" else "" end)),
     row("Status"; .status),
     row("License"; .license),
     row("Repo"; .repo),
     row("Added"; .addedAt),
-    row("Updated"; ((.repositoryUpdatedAt // "") | .[0:10])),
-    row("Release"; (.repositoryRelease.tag // "-")),
+    row("Updated"; ((.repositoryUpdatedAt // "") | clean | .[0:10])),
+    row("Release"; (.repositoryRelease.tag? // "-")),
     "",
-    (.description // ""),
+    ((.description // "") | clean),
     "",
-    row("Install"; (if (.installCommand // "") == "" then "not installable (\(.status // "unknown"))" else .installCommand end)),
-    (if (.installNote // "") != "" then "[33mNote:[0m \(.installNote)" else empty end)
+    row("Install"; (if (.installCommand // "") == "" then "not installable (\((.status // "unknown") | clean))" else .installCommand end)),
+    (if (.installNote // "") != "" then "[33mNote:[0m \(.installNote | clean)" else empty end)
   ' <<<"$rec" | fold -s -w "$cols"
 }
 
@@ -452,10 +508,10 @@ render_preview() {
 
 run_cmd() {
   if (( DRY_RUN )); then
-    echo "[dry-run] $*"
+    echo "[dry-run] $(sanitize "$*")"
     return 0
   fi
-  echo "→ $*"
+  echo "→ $(sanitize "$*")"
   "$@"
 }
 
@@ -464,37 +520,50 @@ yes_flag() {
   return 0
 }
 
+# Only plain GitHub repository URLs are handed to `omarchy plugin add`; the
+# catalog's installCommand / repo fields are data, not a command line.
+INSTALL_URL_RE='^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?$'
+
 do_install() {
-  local id="$1" rec source_type avail repo status note cmd_url
-  rec=$(record_for "$id")
-  [[ -n $rec ]] || { echo "$id: not in catalog"; return 1; }
+  local id="$1" rec source_type avail repo status note cmd_url url
+  local sid; sid=$(sanitize "$id")
+  rec=$(record_for "$id") || rec=""
+  [[ -n $rec ]] || { echo "$sid: not in catalog"; return 1; }
   IFS=$'\t' read -r source_type avail repo status note cmd_url < <(
-    jq -r '[ .sourceType // "community", (.installAvailable | tostring), .repo // "",
-             .status // "", .installNote // "",
-             ((.installCommand // "") | capture("^omarchy plugin add (?<u>[^ ]+)")?.u // "") ] | @tsv' <<<"$rec")
+    jq -r '
+      def clean: (. // "") | tostring | gsub("[\\x{00}-\\x{1f}\\x{7f}-\\x{9f}]"; " ");
+      [ (.sourceType // "community" | clean), (.installAvailable | tostring), (.repo | clean),
+        (.status | clean), (.installNote | clean),
+        ((.installCommand // "") | tostring | capture("^omarchy plugin add (?<u>[^ ]+)")?.u // "" | clean) ] | @tsv' <<<"$rec")
 
   if [[ -n $(installed_state "$id") ]]; then
-    echo "$id: already installed — use ctrl-o to update or ctrl-t to enable/disable"
+    echo "$sid: already installed — use ctrl-o to update or ctrl-t to enable/disable"
     return 0
   fi
   if [[ $source_type == builtin ]]; then
-    echo "$id: built into Omarchy — use ctrl-t to enable/disable it"
+    echo "$sid: built into Omarchy — use ctrl-t to enable/disable it"
     return 0
   fi
   if [[ $avail != true || ( -z $repo && -z $cmd_url ) ]]; then
-    echo "$id: not installable (${status:-unknown})"
-    [[ -n $note ]] && echo "  $note"
+    echo "$sid: not installable ($(sanitize "${status:-unknown}"))"
+    [[ -n $note ]] && echo "  $(sanitize "$note")"
     return 0
   fi
+  url=${cmd_url:-$repo}
+  if [[ ! $url =~ $INSTALL_URL_RE ]]; then
+    echo "$sid: refusing unexpected install URL: $(sanitize "$url")"
+    return 1
+  fi
+  omarchy-git-url-check "$url" || return 1
   # shellcheck disable=SC2046
-  run_cmd omarchy-plugin-add "${cmd_url:-$repo}" --enable $(yes_flag)
+  run_cmd omarchy-plugin-add "$url" --enable $(yes_flag)
 }
 
 do_remove() {
   local id="$1"
-  [[ -n $(installed_state "$id") ]] || { echo "$id: not installed"; return 0; }
+  [[ -n $(installed_state "$id") ]] || { echo "$(sanitize "$id"): not installed"; return 0; }
   [[ -d $PLUGINS_DIR/$id || -L $PLUGINS_DIR/$id ]] ||
-    { echo "$id: built into Omarchy — it cannot be removed, only disabled (ctrl-t)"; return 0; }
+    { echo "$(sanitize "$id"): built into Omarchy — it cannot be removed, only disabled (ctrl-t)"; return 0; }
   # shellcheck disable=SC2046
   run_cmd omarchy-plugin-remove "$id" $(yes_flag)
 }
@@ -503,7 +572,7 @@ do_toggle_enable() {
   local id="$1" state
   state=$(installed_state "$id")
   case $state in
-  "") echo "$id: not installed — press enter to install it" ;;
+  "") echo "$(sanitize "$id"): not installed — press enter to install it" ;;
   true) run_cmd omarchy-plugin-disable "$id" ;;
   *) run_cmd omarchy-plugin-enable "$id" ;;
   esac
@@ -511,9 +580,9 @@ do_toggle_enable() {
 
 do_update() {
   local id="$1"
-  [[ -n $(installed_state "$id") ]] || { echo "$id: not installed"; return 0; }
+  [[ -n $(installed_state "$id") ]] || { echo "$(sanitize "$id"): not installed"; return 0; }
   [[ -d $PLUGINS_DIR/$id/.git ]] ||
-    { echo "$id: not a git-managed plugin, nothing to update"; return 0; }
+    { echo "$(sanitize "$id"): not a git-managed plugin, nothing to update"; return 0; }
   # shellcheck disable=SC2046
   run_cmd omarchy-plugin-update "$id" $(yes_flag)
 }
@@ -524,12 +593,16 @@ run_action() {
   (( $# )) || return 0
   for id in "$@"; do
     echo
+    if ! valid_id "$id"; then
+      echo "$(sanitize "$id"): not a valid plugin id"
+      continue
+    fi
     case $verb in
     install) do_install "$id" ;;
     remove) do_remove "$id" ;;
     toggle-enable) do_toggle_enable "$id" ;;
     update) do_update "$id" ;;
-    esac || echo "$id: $verb failed"
+    esac || echo "$(sanitize "$id"): $verb failed"
   done
   omarchy-show-done
   drain_tty
@@ -537,8 +610,9 @@ run_action() {
 
 open_repo() {
   local repo
-  repo=$(record_for "$1" | jq -r '.repo // empty')
-  [[ -n $repo ]] || return 0
+  repo=$(record_for "$1" | jq -r '.repo // empty') || repo=""
+  repo=$(sanitize "$repo")
+  [[ $repo =~ ^https?:// ]] || return 0
   setsid -f xdg-open "$repo" >/dev/null 2>&1
 }
 
@@ -612,10 +686,12 @@ fzf_main() {
     --preview-window 'down:65%:wrap'
     --preview-label 'alt-p: toggle preview, alt-j/k: scroll, tab: multi-select, ?: help'
     --preview-label-pos 'bottom'
-    # Local HTTP endpoint on a random port (exported as FZF_PORT to child
-    # processes) so the detached sleeper in schedule_unhighlight can push a
-    # fresh header after the highlight deadline without blocking the UI.
-    --listen
+    # Action endpoint on a unix socket inside the private state dir (exported
+    # as FZF_SOCK to child processes, requests authenticated with the per-run
+    # FZF_API_KEY) so the detached sleeper in schedule_unhighlight can push a
+    # fresh header after the highlight deadline without blocking the UI. No
+    # TCP port is opened.
+    --listen "$state_dir/fzf.sock"
     # esc and ctrl-q quit: neutralise fzf's other default abort keys, and make
     # ctrl-d a plain delete-char (its default aborts on an empty query).
     --bind 'ctrl-c:ignore,ctrl-g:ignore,ctrl-q:abort,ctrl-d:delete-char'
@@ -672,12 +748,14 @@ main() {
   ensure_cache $force
   drain_tty
 
-  local state_dir
+  # Private (0700) per-run state dir: the state file and fzf's unix socket.
   state_dir=$(mktemp -d -- "${XDG_RUNTIME_DIR:-/tmp}/oma-quick-plugin-tui.XXXXXX")
-  # shellcheck disable=SC2064
-  trap "rm -rf -- '$state_dir'" EXIT
-  export OPT_SELF="$SELF" OPT_STATE="$state_dir/state"
+  trap 'rm -rf -- "$state_dir"' EXIT
+  export OPT_SELF="$SELF" OPT_STATE="$state_dir/state" OPT_STATE_DIR="$state_dir"
   export OMA_QUICK_PLUGIN_TUI_DRY_RUN="$DRY_RUN" OMA_QUICK_PLUGIN_TUI_YES="$ASSUME_YES"
+  # fzf's --listen server requires this key on every request.
+  FZF_API_KEY=$(head -c 32 /dev/urandom | base64)
+  export FZF_API_KEY
   STATE_FILE="$OPT_STATE"
   save_state
 

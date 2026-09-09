@@ -79,6 +79,36 @@ Cache lives in `~/.cache/oma-quick-plugin-tui/`. If a download fails the last
 cached copy is used and the header says so. Installed state comes from
 `omarchy plugin list --json` on every reload.
 
+## Security / what it touches
+
+The tool runs as your user, needs no root, ships no binaries and sends no
+telemetry. Everything it does:
+
+- **Two HTTPS GETs**: `https://plugins.omarchy.org/catalog.json` and
+  `https://api.omarchyplugins.com/v1/stats`, with curl pinned to HTTPS
+  (`--proto =https --proto-redir =https`), at most 3 redirects and a 64 MB size
+  cap. A download is only accepted once it parses as JSON with a `plugins` key.
+- **A cache directory**: `~/.cache/oma-quick-plugin-tui/` (catalog, stats, and
+  the derived TSV/NDJSON files).
+- **A private per-run state directory** under `$XDG_RUNTIME_DIR` (`mktemp -d`,
+  mode 0700, removed on exit) holding the sort/filter state file and fzf's
+  unix socket. fzf's action endpoint listens on that socket only — no TCP
+  port — and requires a random per-run API key; the tool uses it for one
+  thing, refreshing the header after the highlight timeout.
+- **One `.desktop` file**: while the plugin is enabled, the service writes
+  `~/.local/share/applications/felipe.oma-quick-plugin-tui.desktop`, tagged
+  with an `X-Oma-Quick-Plugin-TUI-Managed=true` marker, and removes it on
+  disable/remove. It never replaces a launcher it did not write.
+- **Plugin changes go through `omarchy plugin add/remove/enable/disable/update`**,
+  with their normal confirmations (unless you pass `--yes`).
+
+Catalog and stats data are treated as untrusted: plugin ids must match
+`[A-Za-z0-9][A-Za-z0-9._-]*` (no `..`), control characters are stripped from
+every string before it reaches the terminal, numbers are coerced, the state
+file is parsed rather than sourced, `alt-o` only opens `http(s)` URLs, and
+`enter` only installs from `https://github.com/<owner>/<repo>[.git]` URLs
+(also checked by `omarchy-git-url-check`).
+
 ## Options
 
 ```
