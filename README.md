@@ -28,12 +28,26 @@ Enabling the plugin adds a **Oma Quick Plugin TUI** entry to the app launcher
 
 ### Omarchy menu entry (optional)
 
-To get an *Install → Plugins* row next to *AUR* and *Package*, add this to
-`~/.config/omarchy/extensions/omarchy-menu.jsonc` (the menu hot-reloads):
+To get an *Install → Plugins* row right after *Install → TUI*, add this to
+`~/.config/omarchy/extensions/omarchy-menu.jsonc` (the menu hot-reloads; 󰐱 is
+the same Nerd Font puzzle glyph Omarchy uses for its own plugin menu):
 
 ```jsonc
-"install.plugins": {"icon":"󰐱","label":"Plugins","action":"xdg-terminal-exec --app-id=org.omarchy.terminal ~/.config/omarchy/plugins/felipe.oma-quick-plugin-tui/bin/oma-quick-plugin-tui"},
+"install.plugins": {"icon":"󰐱","label":"Plugins","action":"omarchy-launch-tui --app-id=TUI.float ~/.config/omarchy/plugins/felipe.oma-quick-plugin-tui/bin/oma-quick-plugin-tui"},
 ```
+
+### Keybinding (optional)
+
+In `~/.config/hypr/bindings.lua` (check the key is free first with
+`omarchy menu keybindings --print`):
+
+```lua
+o.bind("SUPER + SHIFT + CTRL + P", "Plugins",
+  "omarchy-launch-tui --app-id=TUI.float $HOME/.config/omarchy/plugins/felipe.oma-quick-plugin-tui/bin/oma-quick-plugin-tui")
+```
+
+The window uses the `TUI.float` app-id, so Omarchy floats and centres it like
+its other TUIs (Disk Usage, Docker, …).
 
 ## Keys
 

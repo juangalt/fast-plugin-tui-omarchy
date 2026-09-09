@@ -737,7 +737,12 @@ main() {
 
   # Launched from a .desktop entry or app launcher without a terminal.
   if [[ ! -t 0 || ! -t 1 ]]; then
-    exec xdg-terminal-exec --app-id=org.omarchy.terminal "$SELF" "$@"
+    # TUI.float is the app-id Omarchy's own TUI launchers use: Hyprland floats
+    # and centres it at 875x600 (default/hypr/apps/system.lua).
+    if command -v omarchy-launch-tui >/dev/null; then
+      exec omarchy-launch-tui --app-id=TUI.float "$SELF" "$@"
+    fi
+    exec xdg-terminal-exec --app-id=TUI.float -e "$SELF" "$@"
   fi
 
   local dep
