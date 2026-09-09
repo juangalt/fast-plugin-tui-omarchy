@@ -1,4 +1,4 @@
-# Plugin TUI for Omarchy
+# Oma Quick Plugin TUI
 
 A terminal UI for the [Omarchy plugin marketplace](https://plugins.omarchy.org),
 in the same style as Omarchy's *Install → AUR* picker: fuzzy search, a details
@@ -16,14 +16,14 @@ ship with Omarchy.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/felipegalleguillos/omarchy-plugin-tui.git --enable
+omarchy plugin add https://github.com/felipegalleguillos/oma-quick-plugin-tui.git --enable
 ```
 
-Enabling the plugin adds a **Plugin TUI** entry to the app launcher
+Enabling the plugin adds a **Oma Quick Plugin TUI** entry to the app launcher
 (`SUPER + SPACE`). You can also run it directly:
 
 ```bash
-~/.config/omarchy/plugins/felipe.plugin-tui/bin/omarchy-plugin-tui
+~/.config/omarchy/plugins/felipe.oma-quick-plugin-tui/bin/oma-quick-plugin-tui
 ```
 
 ### Omarchy menu entry (optional)
@@ -32,7 +32,7 @@ To get an *Install → Plugins* row next to *AUR* and *Package*, add this to
 `~/.config/omarchy/extensions/omarchy-menu.jsonc` (the menu hot-reloads):
 
 ```jsonc
-"install.plugins": {"icon":"󰐱","label":"Plugins","action":"xdg-terminal-exec --app-id=org.omarchy.terminal ~/.config/omarchy/plugins/felipe.plugin-tui/bin/omarchy-plugin-tui"},
+"install.plugins": {"icon":"󰐱","label":"Plugins","action":"xdg-terminal-exec --app-id=org.omarchy.terminal ~/.config/omarchy/plugins/felipe.oma-quick-plugin-tui/bin/oma-quick-plugin-tui"},
 ```
 
 ## Keys
@@ -65,7 +65,7 @@ In the list, `●` marks an enabled plugin and `○` one that is installed but d
 
 Install, remove and update go through the official `omarchy plugin` commands
 with their normal confirmations (the untrusted-code warning, the bar-section
-picker for bar widgets, the update diff). Set `OMARCHY_PLUGIN_TUI_YES=1` or pass
+picker for bar widgets, the update diff). Set `OMA_QUICK_PLUGIN_TUI_YES=1` or pass
 `--yes` to skip them when batch-installing.
 
 ## Data
@@ -75,39 +75,39 @@ picker for bar widgets, the update diff). Set `OMARCHY_PLUGIN_TUI_YES=1` or pass
 | `https://plugins.omarchy.org/catalog.json` | names, categories, tags, stars, verification, install command | 6 h |
 | `https://api.omarchyplugins.com/v1/stats` | hearts, views, copies | 15 min |
 
-Cache lives in `~/.cache/omarchy-plugin-tui/`. If a download fails the last
+Cache lives in `~/.cache/oma-quick-plugin-tui/`. If a download fails the last
 cached copy is used and the header says so. Installed state comes from
 `omarchy plugin list --json` on every reload.
 
 ## Options
 
 ```
-omarchy-plugin-tui [--refresh] [--yes] [--dry-run]
+oma-quick-plugin-tui [--refresh] [--yes] [--dry-run]
 ```
 
-`--dry-run` (or `OMARCHY_PLUGIN_TUI_DRY_RUN=1`) prints the `omarchy plugin`
-commands instead of running them. `OMARCHY_PLUGIN_TUI_CATALOG_URL` and
-`OMARCHY_PLUGIN_TUI_STATS_URL` point the downloads somewhere else (any URL curl
+`--dry-run` (or `OMA_QUICK_PLUGIN_TUI_DRY_RUN=1`) prints the `omarchy plugin`
+commands instead of running them. `OMA_QUICK_PLUGIN_TUI_CATALOG_URL` and
+`OMA_QUICK_PLUGIN_TUI_STATS_URL` point the downloads somewhere else (any URL curl
 understands, including `file://`) — used by the tests.
 
 ## Development
 
 ```bash
-git clone https://github.com/felipegalleguillos/omarchy-plugin-tui.git
-ln -s "$PWD/omarchy-plugin-tui" ~/.config/omarchy/plugins/felipe.plugin-tui
+git clone https://github.com/felipegalleguillos/oma-quick-plugin-tui.git
+ln -s "$PWD/oma-quick-plugin-tui" ~/.config/omarchy/plugins/felipe.oma-quick-plugin-tui
 omarchy-shell shell rescanPlugins
-omarchy plugin enable felipe.plugin-tui
+omarchy plugin enable felipe.oma-quick-plugin-tui
 ```
 
-Headless checks: `bin/omarchy-plugin-tui __rows | head`,
-`bin/omarchy-plugin-tui __preview b.okomart`, and
+Headless checks: `bin/oma-quick-plugin-tui __rows | head`,
+`bin/oma-quick-plugin-tui __preview b.okomart`, and
 `omarchy-plugin-validate .` (run it on the real directory, not the symlink).
 
 `tests/keys.sh` exercises every key binding end-to-end: it starts the TUI in
 dry-run mode under a pseudo-terminal (`tests/ptydrive.py`, which answers
 terminal queries the way foot does, so `gum` behaves as in a real terminal),
 presses each key and checks the screen. It uses a private cache seeded from
-`~/.cache/omarchy-plugin-tui` and never downloads anything. Run
+`~/.cache/oma-quick-plugin-tui` and never downloads anything. Run
 `tests/keys.sh` for the whole matrix or `tests/keys.sh ctrl_r help` for a few
 cases; `KEEP=1` keeps the typescripts.
 

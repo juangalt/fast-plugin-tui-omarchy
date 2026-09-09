@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# End-to-end key-binding tests for bin/omarchy-plugin-tui.
+# End-to-end key-binding tests for bin/oma-quick-plugin-tui.
 #
 # Every case starts the TUI under a pseudo-terminal (tests/ptydrive.py, which
 # also answers terminal queries like a real terminal so gum behaves as it does
 # in foot), injects key bytes, and asserts on the control-sequence-stripped
 # typescript. Runs in dry-run mode against a private cache seeded from
-# ~/.cache/omarchy-plugin-tui (override with OPT_TEST_SEED=<dir holding
+# ~/.cache/oma-quick-plugin-tui (override with OPT_TEST_SEED=<dir holding
 # catalog.json + stats.json>), so the real cache and any running TUI are
 # never touched. Nothing is downloaded: ctrl-r refreshes from file:// URLs.
 #
@@ -17,9 +17,9 @@ set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname "$HERE")
-TUI=$ROOT/bin/omarchy-plugin-tui
+TUI=$ROOT/bin/oma-quick-plugin-tui
 DRIVER=$HERE/ptydrive.py
-SEED=${OPT_TEST_SEED:-$HOME/.cache/omarchy-plugin-tui}
+SEED=${OPT_TEST_SEED:-$HOME/.cache/oma-quick-plugin-tui}
 COLS=${COLS_OVERRIDE:-160}
 ROWS=${ROWS_OVERRIDE:-45}
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/opt-keys.XXXXXX")
@@ -73,9 +73,9 @@ chmod +x "$WORK/bin/xdg-open"
 export OPT_TEST_XDG_LOG="$WORK/xdg-open.log"
 
 export XDG_CACHE_HOME="$WORK/cache" XDG_RUNTIME_DIR="$WORK/run"
-export OMARCHY_PLUGIN_TUI_DRY_RUN=1
-export OMARCHY_PLUGIN_TUI_CATALOG_URL="file://$WORK/seed/catalog.json"
-export OMARCHY_PLUGIN_TUI_STATS_URL="file://$WORK/seed/stats.json"
+export OMA_QUICK_PLUGIN_TUI_DRY_RUN=1
+export OMA_QUICK_PLUGIN_TUI_CATALOG_URL="file://$WORK/seed/catalog.json"
+export OMA_QUICK_PLUGIN_TUI_STATS_URL="file://$WORK/seed/stats.json"
 export PATH="$WORK/bin:$PATH"
 
 # Warm the private cache headlessly (plain curl from file://, no gum).
@@ -159,11 +159,11 @@ nowaitscreen 1 $POPUP"
 case_esc() {
   run_case esc <<STEPS
 $MAIN
-waitscreen 5 \\A─ Omarchy Plugin TUI - v0\\.1 ─
+waitscreen 5 \\A─ Oma Quick Plugin TUI - v0\\.1 ─
 send \\x1b
 exit 5
 STEPS
-  verdict esc "esc quits (exit 0); title 'Omarchy Plugin TUI - v0.1' is at the top-left of the screen"
+  verdict esc "esc quits (exit 0); title 'Oma Quick Plugin TUI - v0.1' is at the top-left of the screen"
 }
 
 case_ctrl_q() {
@@ -357,7 +357,7 @@ case_ctrl_o() { action_case ctrl_o '\x0f' 'not installed|\[dry-run\] omarchy-plu
 
 case_ctrl_r() {
   # Age the cache so the refresh is visible in the header (2h ago → 0s ago).
-  touch -d '-2 hours' "$WORK/cache/omarchy-plugin-tui/catalog.json" "$WORK/cache/omarchy-plugin-tui/stats.json"
+  touch -d '-2 hours' "$WORK/cache/oma-quick-plugin-tui/catalog.json" "$WORK/cache/oma-quick-plugin-tui/stats.json"
   run_case ctrl_r <<STEPS
 waitscreen 30 $LOADED
 waitscreen 5 catalog: 2h ago

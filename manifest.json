@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "felipe.plugin-tui",
-  "name": "Plugin TUI",
+  "id": "felipe.oma-quick-plugin-tui",
+  "name": "Oma Quick Plugin TUI",
   "version": "0.1.0",
   "author": "Felipe Galleguillos",
   "license": "MIT",

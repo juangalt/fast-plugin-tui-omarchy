@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# omarchy-plugin-tui — browse, search, sort and install Omarchy marketplace
+# oma-quick-plugin-tui — browse, search, sort and install Omarchy marketplace
 # plugins from a fzf TUI, in the style of omarchy-pkg-aur-install.
 #
 # Data comes from two JSON endpoints published by the marketplace:
 #   catalog.json  — plugin metadata incl. category, tags, GitHub stars
 #   /v1/stats     — hearts / views / copies per plugin id
-# Both are cached under $XDG_CACHE_HOME/omarchy-plugin-tui and joined once by
+# Both are cached under $XDG_CACHE_HOME/oma-quick-plugin-tui and joined once by
 # jq into a TSV that fzf reloads instantly on every sort/filter change.
 #
 # fzf key bindings re-invoke this script with a `__subcommand` (see dispatch at
@@ -16,15 +16,15 @@
 set -euo pipefail
 
 SELF=$(realpath -- "${BASH_SOURCE[0]}")
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-plugin-tui"
-CATALOG_URL="${OMARCHY_PLUGIN_TUI_CATALOG_URL:-https://plugins.omarchy.org/catalog.json}"
-STATS_URL="${OMARCHY_PLUGIN_TUI_STATS_URL:-https://api.omarchyplugins.com/v1/stats}"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/oma-quick-plugin-tui"
+CATALOG_URL="${OMA_QUICK_PLUGIN_TUI_CATALOG_URL:-https://plugins.omarchy.org/catalog.json}"
+STATS_URL="${OMA_QUICK_PLUGIN_TUI_STATS_URL:-https://api.omarchyplugins.com/v1/stats}"
 CATALOG_TTL_MIN=360
 STATS_TTL_MIN=15
 PLUGINS_DIR="$HOME/.config/omarchy/plugins"
 SORTS=(stars hearts views copies added updated name)
-DRY_RUN="${OMARCHY_PLUGIN_TUI_DRY_RUN:-0}"
-ASSUME_YES="${OMARCHY_PLUGIN_TUI_YES:-0}"
+DRY_RUN="${OMA_QUICK_PLUGIN_TUI_DRY_RUN:-0}"
+ASSUME_YES="${OMA_QUICK_PLUGIN_TUI_YES:-0}"
 STATE_FILE="${OPT_STATE:-$CACHE_DIR/state}"
 
 SORT=stars
@@ -42,16 +42,16 @@ G_VIEWS=$''
 G_COPIES=$''
 
 fail() {
-  echo "omarchy-plugin-tui: $*" >&2
+  echo "oma-quick-plugin-tui: $*" >&2
   exit 1
 }
 
-# "Omarchy Plugin TUI - v0.1": major.minor from the manifest next to the script.
+# "Oma Quick Plugin TUI - v0.1": major.minor from the manifest next to the script.
 title() {
   local v
   v=$(jq -r '.version // empty' "$(dirname -- "$SELF")/../manifest.json" 2>/dev/null) || v=""
   if [[ $v =~ ^([0-9]+\.[0-9]+) ]]; then v=${BASH_REMATCH[1]}; else v=0.1; fi
-  printf 'Omarchy Plugin TUI - v%s\n' "$v"
+  printf 'Oma Quick Plugin TUI - v%s\n' "$v"
 }
 
 # Programs that own the tty while fzf waits on an execute() — gum 2.0 above
@@ -69,14 +69,14 @@ drain_tty() {
 
 usage() {
   cat <<USAGE
-Usage: omarchy-plugin-tui [--refresh] [--yes] [--dry-run] [-h]
+Usage: oma-quick-plugin-tui [--refresh] [--yes] [--dry-run] [-h]
 
   --refresh   re-download the catalog and stats before starting
   --yes       pass --yes to omarchy plugin add/remove/update (skips confirmations)
   --dry-run   print the omarchy commands instead of running them
 
-Environment: OMARCHY_PLUGIN_TUI_YES=1, OMARCHY_PLUGIN_TUI_DRY_RUN=1
-             OMARCHY_PLUGIN_TUI_CATALOG_URL, OMARCHY_PLUGIN_TUI_STATS_URL (any curl URL, e.g. file://…)
+Environment: OMA_QUICK_PLUGIN_TUI_YES=1, OMA_QUICK_PLUGIN_TUI_DRY_RUN=1
+             OMA_QUICK_PLUGIN_TUI_CATALOG_URL, OMA_QUICK_PLUGIN_TUI_STATS_URL (any curl URL, e.g. file://…)
 Cache: $CACHE_DIR
 USAGE
 }
@@ -673,11 +673,11 @@ main() {
   drain_tty
 
   local state_dir
-  state_dir=$(mktemp -d -- "${XDG_RUNTIME_DIR:-/tmp}/omarchy-plugin-tui.XXXXXX")
+  state_dir=$(mktemp -d -- "${XDG_RUNTIME_DIR:-/tmp}/oma-quick-plugin-tui.XXXXXX")
   # shellcheck disable=SC2064
   trap "rm -rf -- '$state_dir'" EXIT
   export OPT_SELF="$SELF" OPT_STATE="$state_dir/state"
-  export OMARCHY_PLUGIN_TUI_DRY_RUN="$DRY_RUN" OMARCHY_PLUGIN_TUI_YES="$ASSUME_YES"
+  export OMA_QUICK_PLUGIN_TUI_DRY_RUN="$DRY_RUN" OMA_QUICK_PLUGIN_TUI_YES="$ASSUME_YES"
   STATE_FILE="$OPT_STATE"
   save_state
 
