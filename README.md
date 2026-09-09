@@ -43,6 +43,7 @@ Navigation and filters live on `alt`, actions on `ctrl` (plus `enter`).
 |-----|--------|
 | type | fuzzy search over name, id, author and tags |
 | `tab` | multi-select |
+| `home` / `end` | jump to the top / bottom of the list |
 | `alt-s` / `alt-S` | cycle sort (stars → hearts → views → copies → added → updated → name) / pick sort from a list |
 | `alt-c` / `alt-C` | cycle category / pick category from a list |
 | `alt-i` | toggle installed-only |
@@ -55,7 +56,7 @@ Navigation and filters live on `alt`, actions on `ctrl` (plus `enter`).
 | `ctrl-x` | remove an installed plugin |
 | `ctrl-o` | update an installed plugin |
 | `ctrl-r` | re-download catalog and stats |
-| `esc` | quit — the only key that does; `ctrl-c`/`ctrl-g`/`ctrl-q` are ignored and `ctrl-d` just deletes a character |
+| `esc` or `ctrl-q` | quit (`ctrl-c` and `ctrl-g` are ignored; `ctrl-d` just deletes a character) |
 
 When you change the sort, category or a filter, the corresponding value in the
 header lights up for about a second so the change is easy to spot.
@@ -85,7 +86,9 @@ omarchy-plugin-tui [--refresh] [--yes] [--dry-run]
 ```
 
 `--dry-run` (or `OMARCHY_PLUGIN_TUI_DRY_RUN=1`) prints the `omarchy plugin`
-commands instead of running them.
+commands instead of running them. `OMARCHY_PLUGIN_TUI_CATALOG_URL` and
+`OMARCHY_PLUGIN_TUI_STATS_URL` point the downloads somewhere else (any URL curl
+understands, including `file://`) — used by the tests.
 
 ## Development
 

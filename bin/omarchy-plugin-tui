@@ -17,8 +17,8 @@ set -euo pipefail
 
 SELF=$(realpath -- "${BASH_SOURCE[0]}")
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-plugin-tui"
-CATALOG_URL="https://plugins.omarchy.org/catalog.json"
-STATS_URL="https://api.omarchyplugins.com/v1/stats"
+CATALOG_URL="${OMARCHY_PLUGIN_TUI_CATALOG_URL:-https://plugins.omarchy.org/catalog.json}"
+STATS_URL="${OMARCHY_PLUGIN_TUI_STATS_URL:-https://api.omarchyplugins.com/v1/stats}"
 CATALOG_TTL_MIN=360
 STATS_TTL_MIN=15
 PLUGINS_DIR="$HOME/.config/omarchy/plugins"
@@ -46,6 +46,27 @@ fail() {
   exit 1
 }
 
+# "Omarchy Plugin TUI - v0.1": major.minor from the manifest next to the script.
+title() {
+  local v
+  v=$(jq -r '.version // empty' "$(dirname -- "$SELF")/../manifest.json" 2>/dev/null) || v=""
+  if [[ $v =~ ^([0-9]+\.[0-9]+) ]]; then v=${BASH_REMATCH[1]}; else v=0.1; fi
+  printf 'Omarchy Plugin TUI - v%s\n' "$v"
+}
+
+# Programs that own the tty while fzf waits on an execute() — gum 2.0 above
+# all — query the terminal (DECRQM 2026/2027, kitty keyboard flags, …) and
+# the replies ("ESC[?2026;2$y", "ESC[?1u", …) can still be queued on the tty
+# when they exit. fzf would then read them as keystrokes: each `?` opens the
+# help popup and the rest lands in the query. Drop whatever is queued before
+# handing the terminal back. Call it at the end of every path that runs
+# something interactive on the tty, and before fzf starts.
+drain_tty() {
+  : 2>/dev/null <>/dev/tty || return 0
+  while read -rsn 1 -t 0.1 _ </dev/tty; do :; done
+  return 0
+}
+
 usage() {
   cat <<USAGE
 Usage: omarchy-plugin-tui [--refresh] [--yes] [--dry-run] [-h]
@@ -55,6 +76,7 @@ Usage: omarchy-plugin-tui [--refresh] [--yes] [--dry-run] [-h]
   --dry-run   print the omarchy commands instead of running them
 
 Environment: OMARCHY_PLUGIN_TUI_YES=1, OMARCHY_PLUGIN_TUI_DRY_RUN=1
+             OMARCHY_PLUGIN_TUI_CATALOG_URL, OMARCHY_PLUGIN_TUI_STATS_URL (any curl URL, e.g. file://…)
 Cache: $CACHE_DIR
 USAGE
 }
@@ -68,13 +90,15 @@ cache_fresh() {
 
 # Download to a temp file in the cache dir, validate it is JSON with a
 # .plugins key, then rename atomically so a failed download never clobbers
-# the copy we already have.
+# the copy we already have. gum draws the spinner on stderr, which under
+# fzf's execute() is whatever fzf inherited (fzf only puts stdin/stdout on
+# the tty) — so point it at the terminal explicitly.
 fetch() {
   local url="$1" dest="$2" title="$3" tmp ok=1
   tmp=$(mktemp -- "$dest.XXXXXX")
   local -a curl_cmd=(curl -fsSL --connect-timeout 10 --max-time 120 -o "$tmp" "$url")
-  if [[ -t 1 ]] && command -v gum >/dev/null; then
-    gum spin --title "$title" -- "${curl_cmd[@]}" || ok=0
+  if [[ -t 1 ]] && : 2>/dev/null <>/dev/tty && command -v gum >/dev/null; then
+    gum spin --title "$title" -- "${curl_cmd[@]}" 2>/dev/tty || ok=0
   else
     "${curl_cmd[@]}" || ok=0
   fi
@@ -350,7 +374,7 @@ render_header() {
     "$(hl_field ONLY_INSTALLED "$( (( ONLY_INSTALLED )) && echo on || echo off)")" \
     "$(hl_field ONLY_VERIFIED "$( (( ONLY_VERIFIED )) && echo on || echo off)")" \
     "$(age_of catalog.json)" "$(age_of stats.json)" "$status"
-  printf 'enter install  ctrl-t enable/disable  ctrl-x remove  ctrl-o update  ctrl-r refresh   alt-s sort  alt-c category  alt-i/v filters  ? help\n'
+  printf 'enter install  ctrl-t enable/disable  ctrl-x remove  ctrl-o update  ctrl-r refresh   alt-s sort  alt-c category  alt-i/v filters  ? help  esc quit\n'
 }
 
 build_rows() {
@@ -508,6 +532,7 @@ run_action() {
     esac || echo "$id: $verb failed"
   done
   omarchy-show-done
+  drain_tty
 }
 
 open_repo() {
@@ -526,6 +551,7 @@ help_text() {
    tab             multi-select
 
  ${b}Navigation — alt${n}
+   home / end      jump to the top / bottom of the list
    alt-s / alt-S   cycle sort / pick sort from a list
                    (stars → hearts → views → copies → added → updated → name)
    alt-c / alt-C   cycle category / pick category from a list
@@ -535,7 +561,6 @@ help_text() {
    alt-j / alt-k   scroll the details pane one line
    alt-d / alt-u   scroll the details pane half a page
    alt-o           open the plugin repository in the browser
-   alt-h or ?      this help (esc closes it)
 
  ${b}Actions — ctrl${n}
    enter           install selected plugin(s)   → omarchy plugin add <repo> --enable
@@ -544,8 +569,9 @@ help_text() {
    ctrl-o          update an installed plugin
    ctrl-r          re-download catalog and stats
 
- ${b}Quit${n}
-   esc             (ctrl-c, ctrl-g, ctrl-q are ignored; ctrl-d deletes a character)
+ ${b}Help & quit${n}
+   alt-h or ?      this help
+   esc or ctrl-q   quit
 
  ● enabled   ○ installed but disabled
  Cache: $CACHE_DIR
@@ -553,18 +579,23 @@ HELP
 }
 
 # Runs inside fzf's execute(), so it owns the tty: a read-only nested fzf
-# drawn as a bordered popup over the list. Any of esc/q/enter/?/alt-h closes it.
+# drawn as a bordered popup over the list. Any of esc/q/enter/?/alt-h/ctrl-q
+# closes it.
 show_help() {
   help_text | fzf --ansi --no-input --no-multi --layout=reverse --no-info --no-scrollbar \
     --pointer=' ' --margin=3%,8% --border=rounded \
-    --border-label=' Plugin TUI — keys (esc to close) ' \
+    --border-label=' Keys — press esc to close this help ' \
     --color='fg+:-1,bg+:-1,gutter:-1' \
-    --bind 'esc:abort,q:abort,enter:abort,?:abort,alt-h:abort' >/dev/null || true
+    --bind 'esc:abort,q:abort,enter:abort,?:abort,alt-h:abort,ctrl-q:abort' >/dev/null || true
 }
 
 # ---------------------------------------------------------------- main ---
 
 fzf_main() {
+  local title
+  title=$(title)
+  # Same string in the terminal's window title as in the top-left border label.
+  printf '\e]2;%s\a' "$title"
   local -a fzf_args=(
     --multi
     --delimiter $'\t'
@@ -574,6 +605,9 @@ fzf_main() {
     --tiebreak index
     --header "$(render_header)"
     --prompt 'plugins> '
+    --border top
+    --border-label " $title "
+    --border-label-pos 2
     --preview '"$OPT_SELF" __preview {1}'
     --preview-window 'down:65%:wrap'
     --preview-label 'alt-p: toggle preview, alt-j/k: scroll, tab: multi-select, ?: help'
@@ -582,9 +616,12 @@ fzf_main() {
     # processes) so the detached sleeper in schedule_unhighlight can push a
     # fresh header after the highlight deadline without blocking the UI.
     --listen
-    # Only esc quits: neutralise fzf's other default abort keys, and make
+    # esc and ctrl-q quit: neutralise fzf's other default abort keys, and make
     # ctrl-d a plain delete-char (its default aborts on an empty query).
-    --bind 'ctrl-c:ignore,ctrl-g:ignore,ctrl-q:ignore,ctrl-d:delete-char'
+    --bind 'ctrl-c:ignore,ctrl-g:ignore,ctrl-q:abort,ctrl-d:delete-char'
+    # Default (bottom-up) layout: item #1 sits next to the prompt at the
+    # bottom, so the visually top row is `last` and the bottom row `first`.
+    --bind 'home:last,end:first'
     # navigation: alt
     --bind 'alt-p:toggle-preview'
     --bind 'alt-d:preview-half-page-down,alt-u:preview-half-page-up'
@@ -633,6 +670,7 @@ main() {
   done
 
   ensure_cache $force
+  drain_tty
 
   local state_dir
   state_dir=$(mktemp -d -- "${XDG_RUNTIME_DIR:-/tmp}/omarchy-plugin-tui.XXXXXX")
@@ -653,15 +691,15 @@ __preview)       render_preview "${2:?plugin id}" ;;
 __header)        render_header ;;
 __set)           set_state "${2:?key}" "${3:?value}"; refresh_actions ;;
 __toggle)        toggle_state "${2:?key}"; refresh_actions ;;
-__pick)          pick_state "${2:?key}" ;;
+__pick)          pick_state "${2:?key}"; drain_tty ;;
 __refresh)       refresh_actions ;;
-__refresh-cache) ensure_cache --force ;;
+__refresh-cache) ensure_cache --force; drain_tty ;;
 __install)       run_action install "${@:2}" ;;
 __remove)        run_action remove "${@:2}" ;;
 __toggle-enable) run_action toggle-enable "${@:2}" ;;
 __update)        run_action update "${@:2}" ;;
 __open)          open_repo "${2:?plugin id}" ;;
-__help)          show_help ;;
+__help)          show_help; drain_tty ;;
 __unhighlight)   unhighlight ;;
 *)               fail "unknown subcommand: $1" ;;
 esac
