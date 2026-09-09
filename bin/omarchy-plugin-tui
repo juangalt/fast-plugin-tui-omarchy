@@ -31,6 +31,9 @@ SORT=stars
 CATEGORY=""
 ONLY_INSTALLED=0
 ONLY_VERIFIED=0
+HL_FIELD=""   # header field that just changed (SORT, CATEGORY, ONLY_*) …
+HL_UNTIL=0    # … shown highlighted until this epoch-millisecond deadline
+HL_MS=1200
 
 # Nerd Font glyphs (star, heart, eye, copy) — the same font foot renders.
 G_STAR=$''
@@ -192,14 +195,45 @@ save_state() {
   local tmp
   mkdir -p "$(dirname -- "$STATE_FILE")"
   tmp=$(mktemp -- "$STATE_FILE.XXXXXX")
-  printf 'SORT=%q\nCATEGORY=%q\nONLY_INSTALLED=%q\nONLY_VERIFIED=%q\n' \
-    "$SORT" "$CATEGORY" "$ONLY_INSTALLED" "$ONLY_VERIFIED" >"$tmp"
+  printf 'SORT=%q\nCATEGORY=%q\nONLY_INSTALLED=%q\nONLY_VERIFIED=%q\nHL_FIELD=%q\nHL_UNTIL=%q\n' \
+    "$SORT" "$CATEGORY" "$ONLY_INSTALLED" "$ONLY_VERIFIED" "$HL_FIELD" "$HL_UNTIL" >"$tmp"
   mv -f -- "$tmp" "$STATE_FILE"
 }
 
 # Print the fzf action string that re-reads rows and header after a state change.
 refresh_actions() {
   echo 'reload("$OPT_SELF" __rows)+transform-header("$OPT_SELF" __header)'
+}
+
+now_ms() { date +%s%3N; }
+
+# Remember which header field just changed so render_header shows it in
+# reverse video for HL_MS, then arrange for the highlight to be cleared.
+mark_changed() {
+  HL_FIELD=$1
+  HL_UNTIL=$(( $(now_ms) + HL_MS ))
+}
+
+# fzf runs with --listen and exports the port as FZF_PORT to its children.
+# Fork a fully detached sleeper (own session, no fds shared with fzf, so the
+# transform that called us returns immediately) that pushes a fresh header
+# once the deadline has passed. Headless callers have no FZF_PORT: skip.
+schedule_unhighlight() {
+  [[ -n ${FZF_PORT-} ]] || return 0
+  setsid -f "$SELF" __unhighlight </dev/null >/dev/null 2>&1 || true
+}
+
+# Body of the detached sleeper. render_header re-checks HL_UNTIL, so if the
+# user pressed the key again meanwhile the header we push is still
+# highlighted and the later sleeper clears it. The safe --listen server only
+# accepts plain-text actions, hence the header is computed here and sent as
+# change-header:<text> (colon form, because the text contains parentheses).
+unhighlight() {
+  sleep 1.3
+  local header
+  header=$(render_header)
+  curl -s -m 3 -o /dev/null -XPOST "localhost:$FZF_PORT" \
+    --data-binary "change-header:$header" || true
 }
 
 cycle() {
@@ -243,7 +277,9 @@ set_state() {
     ;;
   *) fail "unknown state key: $key" ;;
   esac
+  mark_changed "$key"
   save_state
+  schedule_unhighlight
 }
 
 toggle_state() {
@@ -253,7 +289,9 @@ toggle_state() {
   ONLY_VERIFIED) ONLY_VERIFIED=$(( ONLY_VERIFIED ? 0 : 1 )) ;;
   *) fail "unknown toggle: $1" ;;
   esac
+  mark_changed "$1"
   save_state
+  schedule_unhighlight
 }
 
 # Interactive pickers (run inside fzf's execute(), so they own the tty).
@@ -287,16 +325,32 @@ age_of() {
   fi
 }
 
+# hl_field <FIELD> <value>: the value padded by one space on each side, in
+# bold reverse video while FIELD is the one that just changed (fzf renders
+# ANSI in the header without --ansi). Same width either way, so nothing shifts.
+hl_field() {
+  if [[ $1 == "$HL_ACTIVE" ]]; then
+    printf '\e[1;7m %s \e[0m' "$2"
+  else
+    printf ' %s ' "$2"
+  fi
+}
+
 render_header() {
   load_state
   local status=""
+  HL_ACTIVE=""
   [[ -f $CACHE_DIR/.offline ]] && status="  [offline — showing stale cache]"
-  printf 'sort: %s ▾   category: %s   installed-only: %s   verified-only: %s   catalog: %s ago (stats %s)%s\n' \
-    "$SORT" "${CATEGORY:-all}" \
-    "$( (( ONLY_INSTALLED )) && echo on || echo off)" \
-    "$( (( ONLY_VERIFIED )) && echo on || echo off)" \
+  if [[ -n $HL_FIELD && $HL_UNTIL =~ ^[0-9]+$ ]] && (( $(now_ms) < HL_UNTIL )); then
+    HL_ACTIVE=$HL_FIELD
+  fi
+  printf 'sort:%s▾   category:%s   installed-only:%s   verified-only:%s   catalog: %s ago (stats %s)%s\n' \
+    "$(hl_field SORT "$SORT")" \
+    "$(hl_field CATEGORY "${CATEGORY:-all}")" \
+    "$(hl_field ONLY_INSTALLED "$( (( ONLY_INSTALLED )) && echo on || echo off)")" \
+    "$(hl_field ONLY_VERIFIED "$( (( ONLY_VERIFIED )) && echo on || echo off)")" \
     "$(age_of catalog.json)" "$(age_of stats.json)" "$status"
-  printf 'enter install  ctrl-t enable/disable  ctrl-x remove  ctrl-o update  ctrl-s sort  alt-c category  alt-i/v filters  ctrl-r refresh  alt-h help\n'
+  printf 'enter install  ctrl-t enable/disable  ctrl-x remove  ctrl-o update  ctrl-r refresh   alt-s sort  alt-c category  alt-i/v filters  ? help\n'
 }
 
 build_rows() {
@@ -463,30 +517,49 @@ open_repo() {
   setsid -f xdg-open "$repo" >/dev/null 2>&1
 }
 
-show_help() {
+help_text() {
+  local b=$'\e[1m' n=$'\e[0m'
   cat <<HELP
 
-  Plugin TUI — key bindings
+ ${b}Search${n}
+   type            fuzzy search over name, id, author and tags
+   tab             multi-select
 
-  type            fuzzy search (name, id, author, tags)
-  tab             multi-select
-  enter           install selected plugin(s)          → omarchy plugin add <repo> --enable
-  ctrl-t          enable / disable an installed plugin
-  ctrl-x          remove an installed plugin
-  ctrl-o          update an installed plugin
-  ctrl-s          cycle sort (stars → hearts → views → copies → added → updated → name)
-  alt-s           pick sort from a list
-  alt-c           pick category from a list        alt-C  cycle category
-  alt-i           toggle installed-only            alt-v  toggle verified-only
-  ctrl-r          re-download catalog and stats
-  alt-o           open the plugin repo in the browser
-  alt-p           toggle preview                   alt-j/k, alt-d/u  scroll preview
-  esc / ctrl-c    quit
+ ${b}Navigation — alt${n}
+   alt-s / alt-S   cycle sort / pick sort from a list
+                   (stars → hearts → views → copies → added → updated → name)
+   alt-c / alt-C   cycle category / pick category from a list
+   alt-i           toggle installed-only
+   alt-v           toggle verified-only
+   alt-p           toggle the details pane
+   alt-j / alt-k   scroll the details pane one line
+   alt-d / alt-u   scroll the details pane half a page
+   alt-o           open the plugin repository in the browser
+   alt-h or ?      this help (esc closes it)
 
-  ● enabled   ○ installed but disabled
-  Cache: $CACHE_DIR
+ ${b}Actions — ctrl${n}
+   enter           install selected plugin(s)   → omarchy plugin add <repo> --enable
+   ctrl-t          enable / disable an installed plugin
+   ctrl-x          remove an installed plugin
+   ctrl-o          update an installed plugin
+   ctrl-r          re-download catalog and stats
+
+ ${b}Quit${n}
+   esc             (ctrl-c, ctrl-g, ctrl-q are ignored; ctrl-d deletes a character)
+
+ ● enabled   ○ installed but disabled
+ Cache: $CACHE_DIR
 HELP
-  omarchy-show-done
+}
+
+# Runs inside fzf's execute(), so it owns the tty: a read-only nested fzf
+# drawn as a bordered popup over the list. Any of esc/q/enter/?/alt-h closes it.
+show_help() {
+  help_text | fzf --ansi --no-input --no-multi --layout=reverse --no-info --no-scrollbar \
+    --pointer=' ' --margin=3%,8% --border=rounded \
+    --border-label=' Plugin TUI — keys (esc to close) ' \
+    --color='fg+:-1,bg+:-1,gutter:-1' \
+    --bind 'esc:abort,q:abort,enter:abort,?:abort,alt-h:abort' >/dev/null || true
 }
 
 # ---------------------------------------------------------------- main ---
@@ -503,24 +576,34 @@ fzf_main() {
     --prompt 'plugins> '
     --preview '"$OPT_SELF" __preview {1}'
     --preview-window 'down:65%:wrap'
-    --preview-label 'alt-p: toggle preview, alt-j/k: scroll, tab: multi-select, alt-h: help'
+    --preview-label 'alt-p: toggle preview, alt-j/k: scroll, tab: multi-select, ?: help'
     --preview-label-pos 'bottom'
+    # Local HTTP endpoint on a random port (exported as FZF_PORT to child
+    # processes) so the detached sleeper in schedule_unhighlight can push a
+    # fresh header after the highlight deadline without blocking the UI.
+    --listen
+    # Only esc quits: neutralise fzf's other default abort keys, and make
+    # ctrl-d a plain delete-char (its default aborts on an empty query).
+    --bind 'ctrl-c:ignore,ctrl-g:ignore,ctrl-q:ignore,ctrl-d:delete-char'
+    # navigation: alt
     --bind 'alt-p:toggle-preview'
     --bind 'alt-d:preview-half-page-down,alt-u:preview-half-page-up'
     --bind 'alt-k:preview-up,alt-j:preview-down'
-    --bind 'ctrl-s:transform("$OPT_SELF" __set SORT next)'
-    --bind 'alt-s:execute("$OPT_SELF" __pick SORT)+transform("$OPT_SELF" __refresh)'
-    --bind 'alt-c:execute("$OPT_SELF" __pick CATEGORY)+transform("$OPT_SELF" __refresh)'
-    --bind 'alt-C:transform("$OPT_SELF" __set CATEGORY next)'
+    --bind 'alt-s:transform("$OPT_SELF" __set SORT next)'
+    --bind 'alt-S:execute("$OPT_SELF" __pick SORT)+transform("$OPT_SELF" __refresh)'
+    --bind 'alt-c:transform("$OPT_SELF" __set CATEGORY next)'
+    --bind 'alt-C:execute("$OPT_SELF" __pick CATEGORY)+transform("$OPT_SELF" __refresh)'
     --bind 'alt-i:transform("$OPT_SELF" __toggle ONLY_INSTALLED)'
     --bind 'alt-v:transform("$OPT_SELF" __toggle ONLY_VERIFIED)'
+    --bind 'alt-o:execute-silent("$OPT_SELF" __open {1})'
+    --bind 'alt-h:execute("$OPT_SELF" __help)+transform-header("$OPT_SELF" __header)'
+    --bind '?:execute("$OPT_SELF" __help)+transform-header("$OPT_SELF" __header)'
+    # actions: ctrl (and enter)
     --bind 'ctrl-r:execute("$OPT_SELF" __refresh-cache)+transform("$OPT_SELF" __refresh)'
     --bind 'enter:execute("$OPT_SELF" __install {+1})+deselect-all+reload("$OPT_SELF" __rows)'
     --bind 'ctrl-x:execute("$OPT_SELF" __remove {+1})+deselect-all+reload("$OPT_SELF" __rows)'
     --bind 'ctrl-t:execute("$OPT_SELF" __toggle-enable {+1})+deselect-all+reload("$OPT_SELF" __rows)'
     --bind 'ctrl-o:execute("$OPT_SELF" __update {+1})+deselect-all+reload("$OPT_SELF" __rows)'
-    --bind 'alt-o:execute-silent("$OPT_SELF" __open {1})'
-    --bind 'alt-h:execute("$OPT_SELF" __help)'
     --color 'pointer:green,marker:green'
   )
   build_rows | SHELL=/bin/bash fzf "${fzf_args[@]}" >/dev/null || true
@@ -579,5 +662,6 @@ __toggle-enable) run_action toggle-enable "${@:2}" ;;
 __update)        run_action update "${@:2}" ;;
 __open)          open_repo "${2:?plugin id}" ;;
 __help)          show_help ;;
+__unhighlight)   unhighlight ;;
 *)               fail "unknown subcommand: $1" ;;
 esac

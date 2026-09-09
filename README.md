@@ -37,24 +37,28 @@ To get an *Install → Plugins* row next to *AUR* and *Package*, add this to
 
 ## Keys
 
+Navigation and filters live on `alt`, actions on `ctrl` (plus `enter`).
+
 | Key | Action |
 |-----|--------|
 | type | fuzzy search over name, id, author and tags |
 | `tab` | multi-select |
+| `alt-s` / `alt-S` | cycle sort (stars → hearts → views → copies → added → updated → name) / pick sort from a list |
+| `alt-c` / `alt-C` | cycle category / pick category from a list |
+| `alt-i` | toggle installed-only |
+| `alt-v` | toggle verified-only |
+| `alt-p` | toggle the details pane; `alt-j`/`alt-k`/`alt-d`/`alt-u` scroll it |
+| `alt-o` | open the plugin's repository in the browser |
+| `alt-h` or `?` | help popup (`esc` closes it) |
 | `enter` | install selected plugin(s) — runs `omarchy plugin add <repo> --enable` |
 | `ctrl-t` | enable / disable an installed plugin |
 | `ctrl-x` | remove an installed plugin |
 | `ctrl-o` | update an installed plugin |
-| `ctrl-s` | cycle sort: stars → hearts → views → copies → added → updated → name |
-| `alt-s` | pick sort from a list |
-| `alt-c` / `alt-C` | pick category from a list / cycle categories |
-| `alt-i` | toggle installed-only |
-| `alt-v` | toggle verified-only |
 | `ctrl-r` | re-download catalog and stats |
-| `alt-o` | open the plugin's repository in the browser |
-| `alt-p` | toggle the details pane; `alt-j`/`alt-k`/`alt-d`/`alt-u` scroll it |
-| `alt-h` | help |
-| `esc` | quit |
+| `esc` | quit — the only key that does; `ctrl-c`/`ctrl-g`/`ctrl-q` are ignored and `ctrl-d` just deletes a character |
+
+When you change the sort, category or a filter, the corresponding value in the
+header lights up for about a second so the change is easy to spot.
 
 In the list, `●` marks an enabled plugin and `○` one that is installed but disabled.
 
