@@ -21,7 +21,7 @@ CATALOG_URL="${FAST_PLUGIN_TUI_OMARCHY_CATALOG_URL:-https://plugins.omarchy.org/
 STATS_URL="${FAST_PLUGIN_TUI_OMARCHY_STATS_URL:-https://api.omarchyplugins.com/v1/stats}"
 CATALOG_TTL_MIN=360
 STATS_TTL_MIN=15
-PLUGINS_DIR="$HOME/.config/omarchy/plugins"
+PLUGINS_DIR="${FAST_PLUGIN_TUI_OMARCHY_PLUGINS_DIR:-$HOME/.config/omarchy/plugins}"
 SORTS=(stars hearts views copies added updated name)
 DRY_RUN="${FAST_PLUGIN_TUI_OMARCHY_DRY_RUN:-0}"
 ASSUME_YES="${FAST_PLUGIN_TUI_OMARCHY_YES:-0}"
@@ -56,8 +56,24 @@ fail() {
 # reaches the terminal is stripped of control characters first so a crafted
 # entry cannot inject escape sequences into the preview or the action output.
 ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+COMMIT_RE='^[0-9a-f]{40}$'
 valid_id() { [[ $1 =~ $ID_RE && $1 != *..* ]]; }
 sanitize() { printf '%s' "${1//[[:cntrl:]]/}"; }
+
+# Approved marketplace snapshot from catalog.json. Fail closed: only a
+# lowercase 40-character SHA is accepted (control characters already
+# become spaces in jq clean, which then fails this pattern).
+catalog_pin_sha() {
+  local rec="$1" sha
+  [[ -n $rec ]] || return 1
+  sha=$(jq -r '
+    def clean: (. // "") | tostring | gsub("[\\x{00}-\\x{1f}\\x{7f}-\\x{9f}]"; " ");
+    (.listingValidatedCommit // "" | clean)
+  ' <<<"$rec" 2>/dev/null) || return 1
+  sha=$(sanitize "$sha")
+  [[ $sha =~ $COMMIT_RE ]] || return 1
+  printf '%s' "$sha"
+}
 
 # "Fast Plugin TUI for Omarchy - v0.1": major.minor from the manifest next to the script.
 title() {
@@ -512,6 +528,7 @@ render_preview() {
     row("Status"; .status),
     row("License"; .license),
     row("Repo"; .repo),
+    row("Pin"; ((.listingValidatedCommit // "" | clean) | if test("^[0-9a-f]{40}$") then .[0:7] else "none" end)),
     row("Added"; .addedAt),
     row("Updated"; ((.repositoryUpdatedAt // "") | clean | .[0:10])),
     row("Release"; (.repositoryRelease.tag? // "-")),
@@ -543,8 +560,40 @@ yes_flag() {
 # catalog's installCommand / repo fields are data, not a command line.
 INSTALL_URL_RE='^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?$'
 
+# omarchy-plugin-add has no commit flag (Usage: omarchy plugin add [git-url]
+# [--enable] [--yes]) and does not accept url@sha. Clone without --enable,
+# check out listingValidatedCommit, then enable. --yes on add skips the
+# interactive "Enable now?" prompt that would otherwise start floating HEAD.
+pin_plugin_to_commit() {
+  local id="$1" sha="$2" dir="$PLUGINS_DIR/$id" head
+  if (( DRY_RUN )); then
+    echo "[dry-run] git -C $(sanitize "$dir") fetch origin $(sanitize "$sha") && git -C $(sanitize "$dir") checkout --detach $(sanitize "$sha")"
+    return 0
+  fi
+  [[ -d $dir/.git ]] || { echo "$(sanitize "$id"): no git checkout at $(sanitize "$dir")"; return 1; }
+  head=$(git -C "$dir" rev-parse HEAD 2>/dev/null) || return 1
+  if [[ $head == "$sha" ]]; then
+    echo "$(sanitize "$id"): already at listingValidatedCommit ${sha:0:7}"
+    return 0
+  fi
+  git -C "$dir" fetch --quiet origin "$sha" || {
+    echo "$(sanitize "$id"): could not fetch listingValidatedCommit $sha"
+    return 1
+  }
+  git -C "$dir" checkout --detach --quiet "$sha" || {
+    echo "$(sanitize "$id"): could not check out listingValidatedCommit $sha"
+    return 1
+  }
+  head=$(git -C "$dir" rev-parse HEAD 2>/dev/null) || return 1
+  if [[ $head != "$sha" ]]; then
+    echo "$(sanitize "$id"): HEAD is $head, expected $sha"
+    return 1
+  fi
+  echo "$(sanitize "$id"): pinned to listingValidatedCommit ${sha:0:7}"
+}
+
 do_install() {
-  local id="$1" rec source_type avail repo status note cmd_url url
+  local id="$1" rec source_type avail repo status note cmd_url url sha
   local sid; sid=$(sanitize "$id")
   rec=$(record_for "$id") || rec=""
   [[ -n $rec ]] || { echo "$sid: not in catalog"; return 1; }
@@ -553,7 +602,7 @@ do_install() {
       def clean: (. // "") | tostring | gsub("[\\x{00}-\\x{1f}\\x{7f}-\\x{9f}]"; " ");
       [ (.sourceType // "community" | clean), (.installAvailable | tostring), (.repo | clean),
         (.status | clean), (.installNote | clean),
-        ((.installCommand // "") | tostring | capture("^omarchy plugin add (?<u>[^ ]+)")?.u // "" | clean) ] | @tsv' <<<"$rec")
+        ((.installCommand // "") | tostring | (capture("^omarchy plugin add (?<u>[^ ]+)") // {u:""} | .u) | clean) ] | @tsv' <<<"$rec")
 
   if [[ -n $(installed_state "$id") ]]; then
     echo "$sid: already installed — use ctrl-o to update or ctrl-t to enable/disable"
@@ -573,9 +622,25 @@ do_install() {
     echo "$sid: refusing unexpected install URL: $(sanitize "$url")"
     return 1
   fi
+  sha=$(catalog_pin_sha "$rec") || {
+    echo "$sid: refusing to install without a 40-character listingValidatedCommit"
+    return 1
+  }
   omarchy-git-url-check "$url" || return 1
-  # shellcheck disable=SC2046
-  run_cmd omarchy-plugin-add "$url" --enable $(yes_flag)
+  # add --yes without --enable: clone stays disabled (skips "Enable now?").
+  # Confirm here so we still warn when the user did not pass --yes to us.
+  if (( ! DRY_RUN && ! ASSUME_YES )) && [[ -t 0 && -t 1 ]] && command -v gum >/dev/null; then
+    gum confirm "Install $sid pinned to ${sha:0:7}? Plugins run unsandboxed." || return 1
+  fi
+  run_cmd omarchy-plugin-add "$url" --yes || return 1
+  if ! pin_plugin_to_commit "$id" "$sha"; then
+    echo "$sid: removing unpinned clone"
+    if (( ! DRY_RUN )); then
+      omarchy-plugin-remove "$id" --yes >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
+  run_cmd omarchy-plugin-enable "$id"
 }
 
 do_remove() {
@@ -598,12 +663,19 @@ do_toggle_enable() {
 }
 
 do_update() {
-  local id="$1"
+  local id="$1" rec sha
   [[ -n $(installed_state "$id") ]] || { echo "$(sanitize "$id"): not installed"; return 0; }
   [[ -d $PLUGINS_DIR/$id/.git ]] ||
     { echo "$(sanitize "$id"): not a git-managed plugin, nothing to update"; return 0; }
-  # shellcheck disable=SC2046
-  run_cmd omarchy-plugin-update "$id" $(yes_flag)
+  rec=$(record_for "$id") || rec=""
+  sha=$(catalog_pin_sha "$rec") || {
+    echo "$(sanitize "$id"): refusing to update without a 40-character listingValidatedCommit (will not pull floating HEAD)"
+    return 1
+  }
+  pin_plugin_to_commit "$id" "$sha" || return 1
+  if (( ! DRY_RUN )) && command -v omarchy-shell >/dev/null; then
+    omarchy-shell shell rescanPlugins >/dev/null || true
+  fi
 }
 
 run_action() {
@@ -656,10 +728,10 @@ help_text() {
    alt-o           open the plugin repository in the browser
 
  ${b}Actions — ctrl${n}
-   enter           install selected plugin(s)   → omarchy plugin add <repo> --enable
+   enter           install selected plugin(s)   → add, pin listingValidatedCommit, enable
    ctrl-t          enable / disable an installed plugin
    ctrl-x          remove an installed plugin
-   ctrl-o          update an installed plugin
+   ctrl-o          update an installed plugin   → pin to catalog listingValidatedCommit
    ctrl-r          re-download catalog and stats
 
  ${b}Help & quit${n}

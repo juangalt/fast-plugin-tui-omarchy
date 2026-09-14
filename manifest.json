@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "juangalt.fast-plugin-tui-omarchy",
   "name": "Fast Plugin TUI for Omarchy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Juan Galt",
   "license": "MIT",
   "homepage": "https://github.com/juangalt/fast-plugin-tui-omarchy",
