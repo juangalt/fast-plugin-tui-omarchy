@@ -351,10 +351,10 @@ STEPS
   verdict "$name" "$4"
 }
 
-case_enter()  { action_case enter  '\r'   '\[dry-run\] omarchy-plugin-add|already installed|not installable|built into Omarchy' "enter: dry-run install line, Done prompt, a key returns to main, esc quits"; }
+case_enter()  { action_case enter  '\r'   '\[dry-run\] omarchy-plugin-add|already installed|not installable|built into Omarchy|listingValidatedCommit' "enter: dry-run install line, Done prompt, a key returns to main, esc quits"; }
 case_ctrl_t() { action_case ctrl_t '\x14' 'not installed — press enter|\[dry-run\] omarchy-plugin-(en|dis)able' "ctrl-t: enable/disable message, Done prompt, back to main"; }
 case_ctrl_x() { action_case ctrl_x '\x18' 'not installed|\[dry-run\] omarchy-plugin-remove|built into Omarchy' "ctrl-x: remove message, Done prompt, back to main"; }
-case_ctrl_o() { action_case ctrl_o '\x0f' 'not installed|\[dry-run\] omarchy-plugin-update|not a git-managed' "ctrl-o: update message, Done prompt, back to main"; }
+case_ctrl_o() { action_case ctrl_o '\x0f' 'not installed|\[dry-run\] git -C|listingValidatedCommit|not a git-managed' "ctrl-o: update message, Done prompt, back to main"; }
 
 case_ctrl_r() {
   # Age the cache so the refresh is visible in the header (2h ago → 0s ago).

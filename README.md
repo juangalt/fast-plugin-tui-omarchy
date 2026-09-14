@@ -76,10 +76,10 @@ Navigation and filters live on `alt`, actions on `ctrl` (plus `enter`).
 | `alt-p` | toggle the details pane; `alt-j`/`alt-k`/`alt-d`/`alt-u` scroll it |
 | `alt-o` | open the plugin's repository in the browser |
 | `alt-h` or `?` | help popup (`esc` closes it) |
-| `enter` | install selected plugin(s) — runs `omarchy plugin add <repo> --enable` |
+| `enter` | install selected plugin(s) — clone, pin `listingValidatedCommit`, then enable |
 | `ctrl-t` | enable / disable an installed plugin |
 | `ctrl-x` | remove an installed plugin |
-| `ctrl-o` | update an installed plugin |
+| `ctrl-o` | update an installed plugin — pin to catalog `listingValidatedCommit` (refuses without a pin) |
 | `ctrl-r` | re-download catalog and stats |
 | `esc` or `ctrl-q` | quit (`ctrl-c` and `ctrl-g` are ignored; `ctrl-d` just deletes a character) |
 
@@ -88,10 +88,11 @@ header lights up for about a second so the change is easy to spot.
 
 In the list, `●` marks an enabled plugin and `○` one that is installed but disabled.
 
-Install, remove and update go through the official `omarchy plugin` commands
-with their normal confirmations (the untrusted-code warning, the bar-section
-picker for bar widgets, the update diff). Set `FAST_PLUGIN_TUI_OMARCHY_YES=1` or pass
-`--yes` to skip them when batch-installing.
+Install and remove go through the official `omarchy plugin` commands. Install
+clones with `omarchy-plugin-add` (no `--enable`), checks out the catalog pin,
+then enables. Update pins to that SHA instead of `omarchy plugin update` (which
+fast-forwards to origin HEAD). Set `FAST_PLUGIN_TUI_OMARCHY_YES=1` or pass
+`--yes` to skip confirmations when batch-installing.
 
 ## Data
 
@@ -126,15 +127,24 @@ telemetry. Everything it does:
   `~/.local/share/applications/juangalt.fast-plugin-tui-omarchy.desktop`, tagged
   with an `X-Fast-Plugin-TUI-Omarchy-Managed=true` marker, and removes it on
   disable/remove. It never replaces a launcher it did not write.
-- **Plugin changes go through `omarchy plugin add/remove/enable/disable/update`**,
+- **Plugin changes go through `omarchy plugin add/remove/enable/disable`**,
   with their normal confirmations (unless you pass `--yes`).
+- **Installs are pinned to `listingValidatedCommit`.** `omarchy-plugin-add`
+  accepts only `[git-url] [--enable] [--yes]` — no commit flag and no `url@sha`.
+  This tool reads the catalog's 40-character `listingValidatedCommit`
+  (`^[0-9a-f]{40}$`), clones with `omarchy-plugin-add <url> --yes` (no
+  `--enable`, so the clone stays disabled), `git fetch`es that SHA, checks it
+  out detached, verifies `HEAD`, then runs `omarchy-plugin-enable`. Missing or
+  malformed pins fail closed; floating HEAD is never installed. Updates
+  (ctrl-o) use the same pin and refuse if the catalog has none, instead of
+  `omarchy plugin update` which pulls origin HEAD.
 
 Catalog and stats data are treated as untrusted: plugin ids must match
 `[A-Za-z0-9][A-Za-z0-9._-]*` (no `..`), control characters are stripped from
 every string before it reaches the terminal, numbers are coerced, the state
 file is parsed rather than sourced, `alt-o` only opens `http(s)` URLs, and
 `enter` only installs from `https://github.com/<owner>/<repo>[.git]` URLs
-(also checked by `omarchy-git-url-check`).
+(also checked by `omarchy-git-url-check`) at the catalog pin.
 
 ## Options
 
@@ -163,13 +173,14 @@ cache): `bin/fast-plugin-tui-omarchy __rows | head`,
 `bin/fast-plugin-tui-omarchy __preview juangalt.fast-plugin-tui-omarchy`, and
 `omarchy-plugin-validate .` (run it on the real directory, not the symlink).
 
-`tests/keys.sh` exercises every key binding end-to-end: it starts the TUI in
-dry-run mode under a pseudo-terminal (`tests/ptydrive.py`, which answers
-terminal queries the way foot does, so `gum` behaves as in a real terminal),
-presses each key and checks the screen. It uses a private cache seeded from
-`~/.cache/fast-plugin-tui-omarchy` (so run the TUI once first, or point
-`FPTO_TEST_SEED` at a directory holding `catalog.json` and `stats.json`) and
-never downloads anything. Run
+`tests/pin-install.sh` covers the fail-closed pin (missing/malformed SHA
+refuses; a valid SHA takes the pinned install path). `tests/keys.sh` exercises
+every key binding end-to-end: it starts the TUI in dry-run mode under a
+pseudo-terminal (`tests/ptydrive.py`, which answers terminal queries the way
+foot does, so `gum` behaves as in a real terminal), presses each key and checks
+the screen. It uses a private cache seeded from `~/.cache/fast-plugin-tui-omarchy`
+(so run the TUI once first, or point `FPTO_TEST_SEED` at a directory holding
+`catalog.json` and `stats.json`) and never downloads anything. Run
 `tests/keys.sh` for the whole matrix or `tests/keys.sh ctrl_r help` for a few
 cases; `KEEP=1` keeps the typescripts.
 
@@ -178,7 +189,7 @@ cases; `KEEP=1` keeps the typescripts.
 - Built-in `omarchy.*` plugins appear in the catalog but can only be enabled or disabled, not installed or removed.
 - Preview images are not shown (no image support in the terminal path).
 - Plugin directories whose path contains `@PLUGIN_DIR@` are not supported by the launcher template.
-- Installs are only accepted from `https://github.com/<owner>/<repo>` URLs (today every marketplace entry is one); entries hosted elsewhere would be refused with a message.
+- Installs are only accepted from `https://github.com/<owner>/<repo>` URLs (today every marketplace entry is one) and require a 40-character `listingValidatedCommit`; entries hosted elsewhere or missing a pin are refused.
 
 ## License
 
